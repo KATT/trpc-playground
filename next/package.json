@@ -2,18 +2,24 @@
   "name": "trpc-next",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": "^24.0.0",
-    "pnpm": "^12.0.0"
-  },
-  "packageManager": "pnpm@12.4.1",
   "scripts": {
+    "prepare": "vp config --no-agent --hooks-dir .vite-hooks",
     "typecheck": "pnpm -r run typecheck",
-    "test": "vitest --watch false",
+    "check": "vp check",
+    "fix": "vp check --fix",
+    "fmt": "vp fmt",
+    "lint": "vp lint",
+    "test": "vp test run",
+    "test:watch": "vp test watch",
     "build": "pnpm -r run build"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
-  }
+    "vite-plus": "1.1.0"
+  },
+  "engines": {
+    "node": "^24.11.0",
+    "pnpm": "^12.0.0"
+  },
+  "packageManager": "pnpm@12.4.1"
 }

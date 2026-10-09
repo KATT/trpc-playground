@@ -2,3 +2,11 @@ packages:
   - 'packages/*'
   - 'examples/*'
   - 'test/*'
+
+overrides:
+  vite@*: npm:@voidzero-dev/vite-plus-core@1.1.0
+  vitest@*: 5.0.3
+
+peerDependencyRules:
+  allowedVersions:
+    vite: '1.1.0'

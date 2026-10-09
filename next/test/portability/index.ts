@@ -4,5 +4,5 @@
  *
  * @see ../../../vnext/proposals/01-packages-and-type-portability.md
  */
-export type { } from 'trpcdev/server';
-export type { } from 'trpcdev/client';
+export type {} from 'trpcdev/server';
+export type {} from 'trpcdev/client';

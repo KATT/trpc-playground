@@ -1,0 +1,2 @@
+cd "$(git rev-parse --show-toplevel)/next" || exit 1
+vp staged

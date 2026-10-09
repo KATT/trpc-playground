@@ -1,0 +1,41 @@
+name: next
+
+on:
+  push:
+    branches: [v12]
+    paths:
+      - 'next/**'
+      - '.github/workflows/next.yml'
+  pull_request:
+    paths:
+      - 'next/**'
+      - '.github/workflows/next.yml'
+
+concurrency:
+  group: next-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: next
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: next/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: next/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        env:
+          VP_GIT_HOOKS: '0'
+      - run: pnpm typecheck
+      - run: pnpm check
+      - run: pnpm test

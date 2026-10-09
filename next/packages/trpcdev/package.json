@@ -41,6 +41,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "echo \"build not wired yet\""
   },
+  "devDependencies": {
+    "effect": "4.0.2",
+    "typescript": "^7.0.2",
+    "vite-plus": "1.1.0"
+  },
   "peerDependencies": {
     "effect": "^4.0.0"
   },
@@ -48,9 +53,5 @@
     "effect": {
       "optional": false
     }
-  },
-  "devDependencies": {
-    "effect": "4.0.2",
-    "typescript": "^7.0.2"
   }
 }

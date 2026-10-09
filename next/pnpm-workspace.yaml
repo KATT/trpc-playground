@@ -4,6 +4,9 @@ packages:
   - 'test/*'
   - 'spikes'
 
+minimumReleaseAgeExclude:
+  - vendor-src@0.15.4
+
 overrides:
   vite@*: npm:@voidzero-dev/vite-plus-core@1.1.0
   vitest@*: 5.0.3

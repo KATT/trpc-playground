@@ -8,7 +8,7 @@ import tseslint from 'typescript-eslint';
 export default tseslint.config(
   includeIgnoreFile(path.join(import.meta.dirname, '.gitignore')),
   reactHooks.configs.flat.recommended,
-  { ignores: ['**/vendor/**', '**/generated/**', '.repos/**'] },
+  { ignores: ['**/vendor/**', '**/generated/**', '**/.repos/**'] },
   {
     files: ['**/*.ts', '**/*.tsx'],
     plugins: {

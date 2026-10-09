@@ -1,7 +1,7 @@
 {
-	"$schema": "./node_modules/vendor-src/schema/vendor-src.schema.json",
-	"dir": ".repos",
-	"rootAgentsMd": true,
+	"$schema": "./next/node_modules/vendor-src/schema/vendor-src.schema.json",
+	"dir": "next/.repos",
+	"rootAgentsMd": false,
 	"repos": {
 		"effect": {
 			"packages": [],

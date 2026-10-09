@@ -1,6 +1,6 @@
 /**
  * Contract entry (`trpcdev/contract`).
  *
- * @see ../../../../vnext/proposals/09-contract-first.md
+ * @see ../../../../.agent-docs/proposals/09-contract-first.md
  */
 export {};

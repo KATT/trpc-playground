@@ -12,10 +12,13 @@
     "test": "vp test run",
     "test:watch": "vp test watch",
     "example": "node examples/minimal/index.ts",
-    "build": "pnpm -r run build"
+    "build": "pnpm -r run build",
+    "postinstall": "vendor-src check",
+    "vendor:sync": "vendor-src sync"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
+    "vendor-src": "0.15.4",
     "vite-plus": "1.1.0"
   },
   "engines": {

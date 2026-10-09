@@ -1,0 +1,99 @@
+# 15 — Server-side calls and server actions
+
+| Status     | Area   | Depends on | oRPC parity rows       |
+| ---------- | ------ | ---------- | ---------------------- |
+| `proposed` | server | 03, 07, 08 | Server Actions support |
+
+## Summary
+
+Decide how procedures are called in-process (tests, RSC, scripts, server-to-server) and how they become framework server actions. `ideas.md` makes RSC callers opt-in.
+
+**Recommendation:**
+
+- `createRouterClient()` with direct-call ergonomics.
+- `call()` for single procedures.
+- Opt-in `callable()` and `action()` wrappers, with no builder methods.
+- Actions return typed results instead of throwing.
+
+## Today (v11)
+
+- **Router callers:** `t.createCallerFactory(router)(ctx)` gives `caller.post.byId(input)`. `router.createCaller(ctx)` is deprecated-ish.
+- **Server actions:** `t.procedure.experimental_caller(experimental_nextAppDirCaller({ createContext }))` makes a procedure callable as a function (server actions); experimental.
+- **Internal call path:** `callTRPCProcedure` is the internal path. `unstable_localLink` gives a client that calls a router in-process, with serialization.
+- **TanStack:** `createTRPCOptionsProxy({ router, ctx })` supports server-side prefetching.
+
+## Goals
+
+- One obvious way to call a router in-process.
+- Server actions with typed inputs, outputs _and errors_ that survive the RSC boundary.
+- Opt-in: none of this lives on the core builder.
+- Framework control-flow errors (Next's `redirect()`, `notFound()`) pass through untouched.
+
+## Decision areas
+
+### (a) Router clients
+
+```ts
+const caller = createRouterClient(appRouter, {
+  ctx: async () => createContext({ headers: await headers() }),
+});
+const post = await caller.post.byId({ id: '1' }); // SC-A: direct call
+```
+
+- **SC-A — Direct calls** (v11 `createCaller`, and oRPC's `createRouterClient`): `caller.post.byId(input)`.
+- **SC-B — Remote-client shape:** `caller.post.byId.query(input)`. The same type as `createTRPCClient`, so code can switch between local and remote.
+  - ❌ More verbose for the common server case. `localLink` (17) already covers "remote shape, in-process".
+
+### (b) Single procedures
+
+```ts
+await call(byId, { id: '1' }, { ctx });
+```
+
+### (c) `callable()` and `action()` wrappers
+
+```ts
+// any server code
+export const getPost = callable(byId, { ctx: createContext }); // (input) => Promise<Post>
+
+// Next.js / React server actions
+('use server');
+export const createPost = action(createPostProcedure, {
+  ctx: createContext,
+  rethrow: isNextControlFlowError, // redirect(), notFound()
+});
+
+// client component
+const result = await createPost({ title }); // { data: Post } | { error: TypedError }
+```
+
+- Wrappers instead of `.experimental_caller()` or `.actionable()`. This keeps the builder closed (03) and makes the features tree-shakeable.
+- `action()` accepts an input object _or_ `FormData`. FormData is parsed with bracket notation, the same parser as OpenAPI (18).
+- Errors are **returned** in a serializable result so their types survive the RSC boundary, as in [#5554](https://github.com/trpc/trpc/pull/5554) and [#5569](https://github.com/trpc/trpc/pull/5569). Unexpected errors are masked (07).
+
+### (d) Framework specifics
+
+- Next.js: `isNextControlFlowError` and a `headers()`-aware context helper. They could live in a tiny `@trpcdev/next` package or in documentation (Q15.4).
+- React hooks for actions (`useAction`, optimistic updates) belong to 20.
+
+## Recommendation
+
+- **SC-A** `createRouterClient`.
+- `call()`.
+- `callable()` and `action()` wrappers returning `{ data } | { error }`, with the result shape aligned to 07's `safe()` decision.
+- Framework helpers in docs first; add a package only if the helpers grow.
+
+## Questions for Alex
+
+- **Q15.1** Router client shape: direct calls (SC-A) or remote-client shape (SC-B)?
+- **Q15.2** `callable()`/`action()` wrappers instead of builder methods?
+- **Q15.3** Action result shape: `{ data } | { error }`, a tuple matching `safe()`, or throw?
+- **Q15.4** Next.js helpers: a `@trpcdev/next` package, or documented snippets?
+
+## Decision
+
+- **Q15.1:** [ ] SC-A · [ ] SC-B
+- **Q15.2:** [ ] wrappers · [ ] builder methods
+- **Q15.3:** [ ] `{ data } | { error }` · [ ] tuple like `safe()` · [ ] throw
+- **Q15.4:** [ ] package · [ ] docs
+- **Notes:**

@@ -5,10 +5,15 @@ export default defineConfig({
     singleQuote: true,
     trailingComma: 'all',
     printWidth: 80,
-    ignorePatterns: ['pnpm-lock.yaml', '**/dist/**', 'spikes/**/generated/**'],
+    ignorePatterns: [
+      'pnpm-lock.yaml',
+      '.repos/**',
+      '**/dist/**',
+      'spikes/**/generated/**',
+    ],
   },
   lint: {
-    ignorePatterns: ['**/dist/**', 'spikes/**/generated/**'],
+    ignorePatterns: ['.repos/**', '**/dist/**', 'spikes/**/generated/**'],
     options: {
       typeAware: true,
       typeCheck: true,

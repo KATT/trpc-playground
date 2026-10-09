@@ -14,7 +14,7 @@
     "/www/.docusaurus": true,
     "/www/build": true,
     "**/dist": true,
-    ".repos": true
+    "**/.repos": true
   },
   "files.watcherExclude": {
     "**/.repos/**": true
@@ -39,6 +39,6 @@
   // "explorer.excludeGitIgnore": true,
   "typescript.preferences.autoImportFileExcludePatterns": [
     "packages/server/src/unstable-core-do-not-import.ts",
-    ".repos/**"
+    "**/.repos/**"
   ]
 }

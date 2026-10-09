@@ -1,0 +1,84 @@
+# tRPC vNext: design proposals
+
+This folder (`next/.agent-docs/`) holds the **design** work for the next version of tRPC, following the brief in the repo-root `ideas.md`. **Implementation lives in the rest of [`next/`](../)** — do not put new packages in the repo-root `packages/` tree. Paths such as `.repos/effect` or `spikes/` are relative to `next/`.
+
+It contains:
+
+- **[`approach.md`](./approach.md):** how we work. It covers the process, how agents use this folder, principles, the technical approach, phases and risks. Start here.
+- **[`proposals/`](./proposals):** one file per API area. Each has today's v11 behaviour, options with code sketches, a recommendation, numbered questions and a blank **Decision** block.
+- **[`decisions/`](./decisions):** the decision log (empty until Alex decides).
+- **[`reference/`](./reference):** shared background.
+  - [`orpc-parity.md`](./reference/orpc-parity.md): the oRPC comparison table mapped to proposals, and the decisions that could block parity.
+  - [`v11-inventory.md`](./reference/v11-inventory.md): what v11 ships, and whether each item is kept, changed or deleted.
+  - [`prior-art.md`](./reference/prior-art.md): abandoned tRPC PRs, danSON, Effect v4 and oRPC.
+- **[`notes/`](./notes):** agent working notes and spike results.
+
+## How to decide
+
+Tick boxes in a proposal's **Decision** block, or reply in chat, for example `07: Q7.1 combined, Q7.3 [data, error]`. Partial answers are fine; anything unanswered stays open. The agent records each decision in `decisions/` and ripples it through dependent proposals. Full process in [`approach.md`](./approach.md#1-process-proposals--decisions--code).
+
+## Already decided in `ideas.md`
+
+These are treated as given:
+
+- Effect is the only dependency.
+- One package called `trpcdev` with `/server`, `/client`, … subpaths. Integrations with external dependencies are separate packages.
+- Transformers move to endpoints.
+- `@trpc/react-query` is dead.
+- Markdown docs only.
+- The `@trpcdev` npm scope, with no releases yet.
+- `v12` branch on KATT/trpc-playground, with semantic commits and no PRs.
+
+## Proposals
+
+| #   | Proposal                                                                           | Recommendation in one line                                                                                                                                     | Parity-critical | Qs  |
+| --- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------: | --- |
+| 01  | [Packages and type portability](./proposals/01-packages-and-type-portability.md)   | `trpcdev` with subpaths, `@trpcdev/*` integrations, `effect` as a peer, TS2742 rules + CI fixture                                                              |                 | 5   |
+| 02  | [Effect integration](./proposals/02-effect-integration.md)                         | Effect internals, Promise surface by default; same builder accepts Effect handlers; services declared at the root; strict `E` mapping                          |                 | 4   |
+| 03  | [Builder and init](./proposals/03-builder-and-init.md)                             | `initTRPC.create<{ ctx; meta }>()`, options-bag builder generic (benchmark first), closed builder over an internal generic core, contract/implementation split |       ⚠️        | 5   |
+| 04  | [Procedures](./proposals/04-procedures.md)                                         | Keep query/mutation/subscription; resolver options bag; mutable `response` handle; first-class `.route()`                                                      |       ⚠️        | 5   |
+| 05  | [Validation and schemas](./proposals/05-validation-and-schemas.md)                 | Standard Schema + native Effect Schema only; `type<T>()`; keep input chaining; Standard JSON Schema                                                            |                 | 5   |
+| 06  | [Context and middleware](./proposals/06-context-and-middleware.md)                 | Keep `next({ ctx })`; `ok()` short-circuit; standalone dependency-declaring middleware; lifecycle helpers; no router-level middleware                          |                 | 6   |
+| 07  | [Errors](./proposals/07-errors.md)                                                 | Returned/inferred errors (incl. Effect `E`) + optional declared map + mapping middleware; one isomorphic `TRPCError` with `defined`                            |       ⚠️        | 7   |
+| 08  | [Routers](./proposals/08-routers.md)                                               | Plain objects; optional `t.router()` for prefix/tags; keep `lazy()`; drop `mergeRouters`                                                                       |                 | 4   |
+| 09  | [Contract-first](./proposals/09-contract-first.md)                                 | Contract builder with resolver-less terminals + `t.implement(contract)`; `inferContract` + `toContract()`                                                      |       ⚠️        | 4   |
+| 10  | [Wire protocol](./proposals/10-wire-protocol.md)                                   | New path-based protocol, no envelopes, HTTP status errors, opt-in streamed batching, one message model for WebSocket/MessagePort, version header               |       ⚠️        | 6   |
+| 11  | [Serialization, query params and files](./proposals/11-serialization-and-files.md) | Port **danSON** into `trpcdev/serializer` (rich types + streaming at any depth); legible bracket-notation GET params; files as multipart-backed types          |       ⚠️        | 6   |
+| 12  | [Handlers, adapters and platforms](./proposals/12-handlers-adapters-platforms.md)  | Create-once web-standard handler; platform services via Effect Layers; thin adapters; no third-party dependencies                                              |       ⚠️        | 4   |
+| 13  | [Plugins](./proposals/13-plugins.md)                                               | One plugin interface (`onRequest`/`onCall`); body limit, strict methods and CSRF on by default                                                                 |                 | 4   |
+| 14  | [Subscriptions and streaming](./proposals/14-subscriptions-and-streaming.md)       | Async iterables/Streams; `tracked()` with `lastEventId` in options; fetch-based SSE; hibernation-ready                                                         |                 | 7   |
+| 15  | [Server-side calls and actions](./proposals/15-server-side-calls-and-actions.md)   | `createRouterClient` (direct calls), `call()`, opt-in `callable()`/`action()` wrappers with typed results                                                      |                 | 4   |
+| 16  | [Client](./proposals/16-client.md)                                                 | Keep verbs; positional input + options bag; typed context; AsyncIterable subscriptions; `safe()`                                                               |                 | 6   |
+| 17  | [Links](./proposals/17-links.md)                                                   | Effect link chain with Promise authoring; links declare typed call options (`router: type<AppRouter>()`); one `httpLink`                                       |                 | 5   |
+| 18  | [OpenAPI](./proposals/18-openapi.md)                                               | OpenAPI handler + Standard JSON Schema generator, `.route()`, bracket notation, coercion, Scalar; `openAPILink`                                                |       ⚠️        | 5   |
+| 19  | [TanStack Query](./proposals/19-tanstack-query.md)                                 | Framework-agnostic `@trpcdev/tanstack-query` with option bags, explicit infinite input, streamed/live options                                                  |       ⚠️        | 6   |
+| 20  | [React `use()` package](./proposals/20-react-use-package.md)                       | Defer; keep link-based caching possible                                                                                                                        |                 | 3   |
+| 21  | [Stability and JSDoc](./proposals/21-stability-and-jsdoc.md)                       | `@since`/`@stability` JSDoc + experimental entry points, no name prefixes, CI-enforced                                                                         |                 | 5   |
+| 22  | [Tooling, CI and repo](./proposals/22-tooling-ci-and-repo.md)                      | Vite+ (`vp`) toolchain, TS 7, `vp staged` precommit hook, one CI workflow, fresh layout                                                                        |                 | 5   |
+
+⚠️ marks proposals where some options would block a row in the [oRPC parity matrix](./reference/orpc-parity.md).
+
+## If you only answer a few questions
+
+These have the most leverage: they shape every other proposal and every code sample.
+
+1. **Q3.3** Generic builder: an internal generic core with a closed public builder and opt-in wrappers (recommended), or a public extension API?
+2. **Q2.1** Effect handlers in the same builder (recommended), or a separate Effect flavour?
+3. **Q7.1** Error model: returned/inferred errors + optional declared map + mapping middleware (recommended)?
+4. **Q11.1 / Q11.3** danSON as the serializer, and which legible GET encoding?
+5. **Q10.1 / Q10.2** New protocol? `/post/byId` or `/post.byId`?
+6. **Q17.3** How links inform call options: `createTRPCClient({ router: type<AppRouter>(), links })`, curried, or a second generic?
+7. **Q9.1** Contract syntax: resolver-less `.query()` terminals?
+8. **Q12.1** Own web-standard core with Effect platform Layers (recommended), or build on `effect/http`?
+9. **Q16.1 / Q19.2** Client calls `query(input, opts)` and TanStack `queryOptions({ input })`?
+10. **Q22.1** Vite+ as the single toolchain?
+
+## Parity-critical decisions
+
+Getting these wrong would block rows of the oRPC comparison (details in [`orpc-parity.md`](./reference/orpc-parity.md#the-decisions-that-matter-most-for-parity)):
+
+- **Contract and implementation must be separable** in the procedure data model (03, 09). This affects contract-first, the OpenAPI link and NestJS.
+- **Serialization lives on endpoints, not the router** (11). One router must serve RPC and OpenAPI.
+- **The protocol and handler must not assume HTTP** (10, 12). This affects MessagePort and WebSocket hibernation.
+- **Per-procedure HTTP route metadata** (04, 18). This affects OpenAPI.
+- **A framework-agnostic TanStack integration** (19). This affects Vue, Solid, Svelte and Angular.

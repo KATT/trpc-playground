@@ -22,7 +22,7 @@ nodeOptions: --no-warnings
 
 minimumReleaseAgeExclude:
   - sury@11.0.0
-  - vendor-src@0.15.3
+  - vendor-src@0.15.3 || 0.15.4
 
 allowBuilds:
   '@prisma/client': true

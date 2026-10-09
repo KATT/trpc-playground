@@ -128,6 +128,8 @@ It lives in `trpcdev/effect`. Per `ideas.md`, anything without an external depen
 - Keep `Schema` and `effect/http` **out of the client's default path**.
 - Set a size budget after the first spike, and enforce it in CI with a bundle fixture (Effect's `packages/tools/bundle` is the model).
 
+> **Spike (2026-10-09):** [`notes/effect-client-bundle-size.md`](../notes/effect-client-bundle-size.md). With a minimal Effect client (Promise or Effect surface), Effect's runtime is most of the size: 8.8 KB min+gzip, vs 5.7 KB for v11's `httpBatchLink` client. A full client (retry, SSE, danSON streaming) is 23.7 KB vs 12.9 KB for v11. Streaming danSON (`Queue`) is the most expensive single piece. On 4.0.2, Schema is ~22 KB rather than 15 KB. Includes candidate budgets.
+
 ### (h) Effect version policy
 
 - `effect` is a peer dependency, `^4` (01).

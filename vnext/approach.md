@@ -118,7 +118,8 @@ Some recommendations depend on measurements. These are run as throwaway spikes, 
 
 ## 5. Workflow
 
-- **Branch:** `v12` on [KATT/trpc-playground](https://github.com/KATT/trpc-playground), remote `playground`, based on `origin/main` of `trpc/trpc`. **Never push to `trpc/trpc`.**
+- **Branch:** `v12` on [KATT/trpc-playground](https://github.com/KATT/trpc-playground). In the playground clone the only remote is `origin` → that repo. **Never push to `trpc/trpc`.**
+- **Code root:** all new implementation under `next/` (see `next/README.md`). `vnext/` is design docs only.
 - **Commits:** YOLO semantic commits straight to `v12` (`feat(server): …`, `docs(vnext): …`). No PRs for now.
 - **Precommit hook** formats, lints and runs related tests on staged files (22).
 - **Publishing:** none for now. Packages use the `trpcdev` name and `@trpcdev/*` scope, and examples consume linked local packages.
@@ -128,7 +129,7 @@ Some recommendations depend on measurements. These are run as throwaway spikes, 
 | Phase | Goal                        | Exit criteria                                                                                                                     |
 | ----- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | 0     | **Proposals** (this folder) | Alex has decided 01, 02, 03, 07, 11 and 22 (the foundations); spikes are scheduled for the rest                                   |
-| 1     | Foundations                 | v11 code deleted on `v12`; Vite+ toolchain, CI and hook; `trpcdev` skeleton with the portability fixture                          |
+| 1     | Foundations                 | Implementation under `next/` (own pnpm workspace); Vite+ toolchain, CI and hook; `trpcdev` skeleton + portability fixture. Root v11 tree remains until Alex decides to delete it (22). |
 | 2     | Core server                 | Builder, procedures, validation, middleware, errors, routers, `createRouterClient`; Effect handlers; integration tests in-process |
 | 3     | Protocol and transport      | Serializer, fetch/Node handlers, batching, streaming/SSE, WebSocket; plugins with secure defaults                                 |
 | 4     | Client                      | Proxy client, Effect link chain, `httpLink`, `wsLink`, typed link options; Effect client                                          |

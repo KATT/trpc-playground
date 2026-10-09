@@ -71,24 +71,25 @@ Every other workflow is deleted. CodeQL, labeler, release and similar can come b
 
 ## Repo layout on `v12`
 
+New implementation lives under **`next/`** (own pnpm workspace), so the leftover v11 tree at the repo root is not mixed in:
+
 ```text
-packages/
-  trpcdev/                 the core package (01)
-  tanstack-query/          @trpcdev/tanstack-query (19)
-examples/
-  minimal/                 node server + vanilla client
-  effect/                  Effect handlers, services, Effect client
-  next-app/                Next.js app router + TanStack Query + actions
-  openapi/                 OpenAPI handler + Scalar
-  realtime/                subscriptions over SSE and WebSocket
-docs/                      Markdown user docs (21: generated reference in docs/reference/)
-test/portability/          TS2742 fixture (01)
-vnext/                     proposals, decisions and agent docs (this folder)
-.repos/                    vendored sources (read-only)
+next/                         ← code root (cd here to work)
+  packages/trpcdev/           core package (01)
+  packages/tanstack-query/    @trpcdev/tanstack-query (19, later)
+  examples/minimal/           …
+  examples/effect/            …
+  examples/next-app/          Next.js app (name is the framework, not this folder)
+  examples/openapi/
+  examples/realtime/
+  docs/                       Markdown user docs
+  test/portability/           TS2742 fixture (01)
+vnext/                        proposals, decisions and agent docs (this folder)
+.repos/                       vendored sources (read-only)
+packages/, examples/, www/    leftover v11 — do not extend; delete when Alex says (Q22.5)
 ```
 
-- v11 code is deleted from `v12` in one commit once 01 and 22 are decided. It stays readable on `origin/main`.
-- Examples depend on `trpcdev: workspace:*` ("examples that work with a linked local package"). No `subtree` syncing.
+- Examples depend on `trpcdev: workspace:*` inside the `next/` workspace. No `subtree` syncing.
 - **Open:** whether `vnext/` should be renamed later (for example `docs/internal/` or `.agents/`) once the proposals phase is over.
 
 ## Recommendation

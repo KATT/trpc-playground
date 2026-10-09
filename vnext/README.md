@@ -1,6 +1,8 @@
 # tRPC vNext: design proposals
 
-This folder holds the design work for the next version of tRPC, following `../ideas.md`. It contains:
+This folder holds the **design** work for the next version of tRPC, following `../ideas.md`. **Implementation lives in [`../next/`](../next/)** — do not put new packages in the root `packages/` tree.
+
+It contains:
 
 - **[`approach.md`](./approach.md):** how we work. It covers the process, how agents use this folder, principles, the technical approach, phases and risks. Start here.
 - **[`proposals/`](./proposals):** one file per API area. Each has today's v11 behaviour, options with code sketches, a recommendation, numbered questions and a blank **Decision** block.

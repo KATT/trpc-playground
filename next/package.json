@@ -1,0 +1,19 @@
+{
+  "name": "trpc-next",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^24.0.0",
+    "pnpm": "^12.0.0"
+  },
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "typecheck": "pnpm -r run typecheck",
+    "test": "vitest --watch false",
+    "build": "pnpm -r run build"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

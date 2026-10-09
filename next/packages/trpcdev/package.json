@@ -1,0 +1,56 @@
+{
+  "name": "trpcdev",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": {
+      "types": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./src/client/index.ts"
+    },
+    "./contract": {
+      "types": "./src/contract/index.ts",
+      "default": "./src/contract/index.ts"
+    },
+    "./serializer": {
+      "types": "./src/serializer/index.ts",
+      "default": "./src/serializer/index.ts"
+    },
+    "./openapi": {
+      "types": "./src/openapi/index.ts",
+      "default": "./src/openapi/index.ts"
+    },
+    "./effect": {
+      "types": "./src/effect/index.ts",
+      "default": "./src/effect/index.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "default": "./src/testing/index.ts"
+    },
+    "./internal": {
+      "types": "./src/internal/index.ts",
+      "default": "./src/internal/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "echo \"build not wired yet\""
+  },
+  "peerDependencies": {
+    "effect": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "effect": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "effect": "4.0.2",
+    "typescript": "^7.0.2"
+  }
+}

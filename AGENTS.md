@@ -4,9 +4,12 @@
 
 This repo is a **from-scratch rewrite** of tRPC (vNext / `v12` branch), not maintenance of current tRPC.
 
+**New code lives in `next/`.** Do not add vNext packages to the root `packages/` tree (that is leftover v11). Design docs live in `vnext/`.
+
 Start here:
 
 - `ideas.md` — brief and constraints
+- `next/README.md` — implementation root layout
 - `vnext/approach.md` — process, principles, phases
 - `vnext/README.md` — proposal index and how to decide
 - `vnext/proposals/` — API proposals (options + recommendations; Alex decides)
@@ -14,7 +17,7 @@ Start here:
 - `vnext/reference/` — oRPC parity, v11 inventory, prior art
 - `vnext/notes/` — spikes and research
 
-Search `vnext/` before designing or implementing. Do not silently diverge from a recorded decision.
+Search `vnext/` before designing or implementing. Implement under `next/`. Do not silently diverge from a recorded decision.
 
 <!-- vendor-src:start -->
 

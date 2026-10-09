@@ -28,6 +28,9 @@
 - Take no shortcuts to getting the best APIs
 - We want to have a design that allows for OpenAPI support like oRPC does (orpc.dev)
 - For now, we can publish everything under the `@trpcdev` scope rather than `@trpc` on npm
+- We push to https://github.com/KATT/trpc-playground rather than trpc
+- We should probably recreate all CI things to be a lot simpler than what is today
+- We should aim for feature parity with https://orpc.dev/docs/comparison. Highlight anything and prompt user when we make API decisions that may stop us from getting there.
 
 The only dev deps I can think of that should be:
 

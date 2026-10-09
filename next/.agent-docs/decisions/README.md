@@ -19,6 +19,7 @@ Decisions are never edited after the fact except to add a "Superseded by" link. 
 | [0009](./0009-contract-terminal-syntax.md)                | Contracts use resolver-less terminals (Q9.1)                                  | [09](../proposals/09-contract-first.md)                | 2026-10-09 | accepted |
 | [0010](./0010-router-merge-helper.md)                     | Keep a router merge helper that rejects duplicates (Q8.2)                     | [08](../proposals/08-routers.md)                       | 2026-10-09 | accepted |
 | [0011](./0011-since-prerelease.md)                        | `@since` uses the v12 prerelease version (Q21.2)                              | [21](../proposals/21-stability-and-jsdoc.md)           | 2026-10-09 | accepted |
+| [0012](./0012-no-unvalidated-type-helper.md)              | No `type<T>()` or plain-function parsers (Q5.2)                               | [05](../proposals/05-validation-and-schemas.md)        | 2026-10-09 | accepted |
 
 ## Template
 

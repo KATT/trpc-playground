@@ -127,7 +127,7 @@ const spec = await generateOpenAPI(appRouter, { info: { title: 'API', version: '
 ### (c) Spec generation
 
 - **Runtime, from schemas:** uses `~standard.jsonSchema.input()/output()` (Zod 4.2+, Effect via `Schema.toStandardJSONSchemaV1`), plus a converter fallback for other libraries (05).
-- **Procedures without schemas** (for example `type<T>()`) produce `{}` schemas, unless documented via `.route({ spec })`.
+- **Procedures without static schemas** (no `.input()`, or a ctx callback, 05 (d) D-A) produce `{}` schemas, unless documented via `.route({ spec })`. `type<T>()` no longer exists ([0012](../decisions/0012-no-unvalidated-type-helper.md)).
 - **Errors:**
   - Declared errors (07 A) produce responses with their status and `data` schema.
   - Inferred-only errors appear as `code` enums without data schemas.
@@ -142,8 +142,8 @@ const byId = t.procedure
   .query(…);
 // responses: 200 (output schema), 400 (validation issues), 404 ({ code: 'NOT_FOUND', data: { id: string } })
 
-const legacy = t.procedure
-  .input(type<{ id: string }>()) // no JSON Schema: documented by hand
+const legacy = authed
+  .input(({ ctx }) => byPlan[ctx.user.plan]) // ctx callback (05 (d)): no static JSON Schema, documented by hand
   .route({ spec: (op) => ({ ...op, parameters: [{ name: 'id', in: 'query', required: true, schema: { type: 'string' } }] }) })
   .query(…);
 

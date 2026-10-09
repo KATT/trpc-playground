@@ -14,3 +14,4 @@ Generated fixtures and build output (`generated/`, `dist/`) are gitignored; the 
 | `middleware-typing/` | `pnpm test` (root)                                             | [middleware-and-input-typing](../.agent-docs/notes/middleware-and-input-typing.md)   |
 | `effect-services/`   | `pnpm test` (root), `node effect-services/bench.ts [n] [runs]` | [effect-services-typing](../.agent-docs/notes/effect-services-typing.md)             |
 | `contracts/`         | `pnpm test` (root), `node contracts/bench.ts [n] [runs]`       | [contracts-and-routers-typing](../.agent-docs/notes/contracts-and-routers-typing.md) |
+| `tanstack-options/`  | `pnpm test` (root)                                             | [tanstack-options-typing](../.agent-docs/notes/tanstack-options-typing.md)           |

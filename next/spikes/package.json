@@ -11,6 +11,7 @@
     "trpcdev": "workspace:*"
   },
   "devDependencies": {
+    "@tanstack/query-core": "5.90.20",
     "@trpc/client": "11.19.0",
     "@trpc/server": "11.19.0",
     "@types/node": "^24.0.0",

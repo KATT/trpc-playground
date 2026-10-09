@@ -19,3 +19,4 @@ Agent-written working notes: research, spike results, benchmarks and anything wo
 | [Middleware and input typing](./middleware-and-input-typing.md)      | 05, 06 | `middleware-typing/`  |
 | [Effect services: S1 vs S2](./effect-services-typing.md)             | 02, 06 | `effect-services/`    |
 | [Contracts and routers typing](./contracts-and-routers-typing.md)    | 09, 08 | `contracts/`          |
+| [TanStack Query option-bag typing](./tanstack-options-typing.md)     | 19     | `tanstack-options/`   |

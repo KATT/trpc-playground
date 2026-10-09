@@ -71,6 +71,26 @@ http.createServer(toNodeListener(handler, { prefix: '/trpc' })).listen(3000);
 
 Routes become `HttpRouter` entries. Serving uses `NodeHttpServer.layer` / `BunHttpServer.layer`, and `HttpEffect.toWebHandler` handles fetch platforms.
 
+```ts
+import { NodeHttpServer, NodeRuntime } from '@effect/platform-node';
+import { Layer } from 'effect';
+import { HttpRouter } from 'effect/http';
+import { createServer } from 'node:http';
+
+const TrpcRoutes = trpcRoutes(appRouter, { prefix: '/trpc', createContext }); // name TBD; Layer that adds HttpRouter routes
+
+// Node
+HttpRouter.serve(TrpcRoutes).pipe(
+  Layer.provide(NodeHttpServer.layer(createServer, { port: 3000 })),
+  Layer.launch,
+  NodeRuntime.runMain,
+);
+
+// Fetch platforms
+const { handler, dispose } = HttpRouter.toWebHandler(TrpcRoutes);
+export default { fetch: handler };
+```
+
 - ✅ Reuses Effect's server stack. Effect users mount tRPC directly into their `HttpRouter`.
 - ❌ `effect/http` is `@stability unstable` (breaking changes in minors).
 - ❌ `@effect/platform-node` adds `undici` and `@effect/platform-node-shared`, which violates "Effect is the only dependency" in spirit.
@@ -79,6 +99,20 @@ Routes become `HttpRouter` entries. Serving uses `NodeHttpServer.layer` / `BunHt
 ### P-C — Hybrid
 
 P-A for the core, plus `toHttpApp(handler)` / `HttpRouter` interop in `./effect` for Effect users.
+
+```ts
+import { toHttpApp } from 'trpcdev/effect';
+
+const handler = createHandler({ router: appRouter, createContext }); // P-A, unchanged
+
+// Effect users mount the same handler into their own HttpRouter
+const TrpcRoute = HttpRouter.add('*', '/trpc/*', toHttpApp(handler));
+HttpRouter.serve(Layer.mergeAll(TrpcRoute, OtherRoutes)).pipe(
+  Layer.provide(NodeHttpServer.layer(createServer, { port: 3000 })),
+  Layer.launch,
+  NodeRuntime.runMain,
+);
+```
 
 ## Adapters for v1 (proposed)
 
@@ -92,6 +126,61 @@ P-A for the core, plus `toHttpApp(handler)` / `HttpRouter` interop in `./effect`
 | WebSocket                                     | `handler.websocket(socket, { request })`                      | Standard `WebSocket` interface: works with `ws`, Bun, Deno, CF |
 | Cloudflare hibernation                        | `handler.websocketMessage(ws, data)` + serialized attachments | Stateless message processing (10, 14)                          |
 | MessagePort (Electron, workers, iframes)      | `handler.messagePort(port)` + `messagePortLink`               | Same message model as WebSocket                                |
+
+Fetch platforms call `handler.fetch` from their own entry point:
+
+```ts
+// Next.js app router: app/api/trpc/[...trpc]/route.ts
+const route = (req: Request) => handler.fetch(req, { prefix: '/api/trpc' });
+export { route as GET, route as POST };
+
+// Bun / Deno
+Bun.serve({
+  port: 3000,
+  fetch: (req) => handler.fetch(req, { prefix: '/trpc' }),
+});
+Deno.serve((req) => handler.fetch(req, { prefix: '/trpc' }));
+
+// Hono
+app.all('/trpc/*', (c) => handler.fetch(c.req.raw, { prefix: '/trpc' }));
+```
+
+Node and serverless adapters wrap the same handler:
+
+```ts
+import { createServer, toNodeListener } from 'trpcdev/server/node';
+
+app.use('/trpc', toNodeListener(handler)); // Express / Connect: plain middleware
+createServer(handler, { port: 3000 }); // standalone
+
+await fastify.register(fastifyPlugin(handler), { prefix: '/trpc' }); // open: v1 or later
+export const lambda = toLambdaHandler(handler); // open: v1 or later
+```
+
+WebSocket and MessagePort take standard objects:
+
+```ts
+// Deno: any standard WebSocket
+Deno.serve((req) => {
+  const { socket, response } = Deno.upgradeWebSocket(req);
+  handler.websocket(socket, { request: req });
+  return response;
+});
+
+// Cloudflare Durable Object with hibernation: no in-memory subscription state
+export class TRPCSocket extends DurableObject {
+  webSocketMessage(ws: WebSocket, data: string | ArrayBuffer) {
+    return handler.websocketMessage(ws, data); // state restored from serialized attachments
+  }
+}
+
+// Electron, workers, iframes
+const { port1, port2 } = new MessageChannel();
+handler.messagePort(port1);
+const client = createTRPCClient<AppRouter>({
+  links: [messagePortLink({ port: port2 })],
+});
+```
 
 ## Recommendation
 

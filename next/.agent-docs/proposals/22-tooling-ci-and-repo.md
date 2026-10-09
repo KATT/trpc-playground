@@ -42,6 +42,16 @@
 | Versioning / releases    | none for now; later `pnpm publish -r` + a changelog script                                             | `ideas.md`: no releases soon                                                                                                                    |
 | Vendored sources         | `vendor-src` (existing)                                                                                | **Exception to the allow-list; confirm**                                                                                                        |
 
+The two shapes in Q22.1, as root `package.json` scripts:
+
+```jsonc
+// Vite+ (next/package.json today)
+"scripts": { "check": "vp check", "fix": "vp check --fix", "test": "vp test run" }
+
+// individual tools wired with pnpm scripts
+"scripts": { "check": "oxfmt --check && oxlint", "fix": "oxfmt && oxlint --fix", "test": "vitest run" }
+```
+
 ## Precommit hook
 
 ```ts
@@ -58,7 +68,7 @@ export default defineConfig({
 
 ## CI (one workflow)
 
-`.github/workflows/ci.yml` runs on push to `v12` and on PRs:
+`.github/workflows/next.yml` runs on push to `v12` and on PRs:
 
 1. `pnpm install --frozen-lockfile` with a cache.
 2. `vp check` (format, lint, types), with no auto-fix.
@@ -66,6 +76,40 @@ export default defineConfig({
 4. **Portability fixture:** builds `test/portability` with `declaration: true` and fails on TS2742 (01).
 5. **Examples:** typecheck and build every example against `workspace:*` packages.
 6. **Optional matrix:** latest Effect minor (02 (h)), plus a bundle-size budget check (02 (g)).
+
+Abbreviated from the workflow that exists today, [`.github/workflows/next.yml`](../../../.github/workflows/next.yml). The `effect-latest` job is a sketch and is not in the file.
+
+```yaml
+on:
+  push: { branches: [v12], paths: ['next/**', '.github/workflows/next.yml'] }
+  pull_request: { paths: ['next/**', '.github/workflows/next.yml'] }
+defaults:
+  run: { working-directory: next }
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with: { package_json_file: next/package.json }
+      - uses: actions/setup-node@v7
+        with:
+          {
+            node-version: 24,
+            cache: pnpm,
+            cache-dependency-path: next/pnpm-lock.yaml,
+          }
+      - run: pnpm install --frozen-lockfile # 1
+        env: { VP_GIT_HOOKS: '0' }
+      - run: pnpm typecheck # 2 types, in every package including test/portability (4) and examples/* (5)
+      - run: pnpm check # 2: vp check, no --fix
+      - run: pnpm test # 3: vp test run
+  effect-latest: # 6 (optional)
+    runs-on: ubuntu-latest
+    steps:
+      # same setup steps as `check`, then:
+      - run: pnpm up -r effect@latest && pnpm typecheck && pnpm test
+```
 
 Every other workflow is deleted. CodeQL, labeler, release and similar can come back individually when needed.
 
@@ -92,6 +136,17 @@ packages/, examples/, www/    leftover v11 — do not extend; delete when Alex s
 ```
 
 - Examples depend on `trpcdev: workspace:*` inside the `next/` workspace. No `subtree` syncing.
+
+  ```jsonc
+  // next/examples/minimal/package.json
+  {
+    "name": "@example/minimal",
+    "private": true,
+    "scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" },
+    "dependencies": { "trpcdev": "workspace:*" },
+  }
+  ```
+
 - Agent docs moved from the repo-root `vnext/` to `next/.agent-docs/` (2026-10-09), so `next/` is self-contained when opened as a workspace root.
 
 ## Recommendation

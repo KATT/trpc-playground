@@ -68,6 +68,39 @@ trpcdev
 - ✅ Contract, client and server types share one source of truth.
 - ❌ Client-only consumers download server code (bytes on disk only; it is tree-shaken from bundles).
 
+Imports under each Q1.2 granularity:
+
+```ts
+// Q1.2 as proposed
+import { initTRPC, TRPCError } from 'trpcdev/server';
+import { createHandler } from 'trpcdev/server/fetch';
+import { toNodeListener } from 'trpcdev/server/node';
+import { cors, bodyLimit } from 'trpcdev/server/plugins';
+import { createTRPCClient, httpLink } from 'trpcdev/client';
+
+// Q1.2 flatter: the fetch handler is part of ./server; platforms are top-level
+import { initTRPC, TRPCError, createHandler } from 'trpcdev/server';
+import { toNodeListener } from 'trpcdev/node';
+import { createTRPCClient, httpLink } from 'trpcdev/client';
+```
+
+Integration packages under each Q1.3 naming:
+
+```ts
+import { createTRPCQueryUtils } from '@trpcdev/tanstack-query'; // scoped (recommended)
+import { createTRPCQueryUtils } from 'trpcdev-tanstack-query'; // unscoped
+```
+
+`./testing` (Q1.4), with the helpers named in `approach.md`:
+
+```ts
+import { createTestServer, createTestClient } from 'trpcdev/testing';
+
+await using server = createTestServer({ router: appRouter, createContext }); // option shapes TBD
+const client = createTestClient<AppRouter>({ server });
+expect(await client.post.byId.query({ id: '1' })).toEqual(post);
+```
+
 ## Portability rules
 
 1. **Every type that is reachable from a public signature is exported from a public entry point.** No exceptions for "internal" helper types. They go in `./internal` with a stability tag (21), but they are exported.
@@ -77,10 +110,76 @@ trpcdev
 5. Either do not bundle declarations across entry points, or verify that each shared chunk's types are re-exported from a public entry.
 6. **CI fixture:** a `test/portability` workspace with pnpm-isolated consumer packages that `export const client = createTRPCClient(...)`, `export const utils = createTRPCQueryUtils(...)`, `export type AppRouter = …` and so on, compiled with `declaration: true`. The build fails on TS2742.
 
+Rules 1 and 4 in library source:
+
+```ts
+// ✅ explicit return type; TRPCClient is exported from trpcdev/client
+export function createTRPCClient<TRouter>(
+  opts: CreateTRPCClientOptions<TRouter>,
+): TRPCClient<TRouter> {
+  return createTRPCClientProxy<TRouter>(new TRPCUntypedClient(opts));
+}
+
+// ❌ inferred return type: rejected by isolatedDeclarations, and TS2742 for
+// consumers if the inferred type is not exported from a public entry point
+export function createTRPCClient<TRouter>(
+  opts: CreateTRPCClientOptions<TRouter>,
+) {
+  return createTRPCClientProxy<TRouter>(new TRPCUntypedClient(opts));
+}
+```
+
+Rule 2 in an integration package:
+
+```ts
+// @trpcdev/tanstack-query/src/index.ts
+import type { TRPCClient } from 'trpcdev/client'; // ✅ use the peer's types
+export { createTRPCQueryUtils } from './createTRPCQueryUtils';
+// ❌ export type { TRPCClient } from 'trpcdev/client';
+```
+
+```jsonc
+// @trpcdev/tanstack-query/package.json
+{
+  "peerDependencies": {
+    "@tanstack/query-core": "^5",
+    "trpcdev": "workspace:^",
+  },
+}
+```
+
+Rules 3 and 6: the portability fixture exports a client typed by a contract, from a package that does not depend on the server's dependencies:
+
+```ts
+// test/portability/server/src/index.ts
+export const appRouter = { post: { byId, create } };
+export type AppContract = inferContract<typeof appRouter>; // no ctx, middleware or services
+
+// test/portability/ui/src/index.ts (declaration: true; TS2742 fails the build)
+import { createTRPCClient, httpLink } from 'trpcdev/client';
+import { createTRPCQueryUtils } from '@trpcdev/tanstack-query';
+import type { AppContract } from 'portability-server'; // fixture package name TBD
+
+export const client = createTRPCClient<AppContract>({
+  links: [httpLink({ url: '/trpc' })],
+});
+export const utils = createTRPCQueryUtils({ client });
+```
+
 ## `effect` as a dependency
 
 - `effect` must be a single instance in a user's app if they also use Effect. `Effect.isEffect`, `Context` identity and fiber refs break with duplicate copies.
 - **Recommendation:** `effect` is a **peer dependency** (`^4`). npm, pnpm and Bun auto-install peers, so non-Effect users still get it for free. This mirrors how Effect's own `@effect/platform-*` packages depend on `effect`.
+
+```jsonc
+// trpcdev/package.json, Q1.1 peer dependency (recommended)
+{ "peerDependencies": { "effect": "^4" } }
+```
+
+```jsonc
+// trpcdev/package.json, Q1.1 regular dependency
+{ "dependencies": { "effect": "^4" } }
+```
 
 ## Recommendation
 

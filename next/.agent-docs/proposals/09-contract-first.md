@@ -70,14 +70,67 @@ const client = createTRPCClient<typeof appContract>({
 ### Design notes
 
 - **Terminal without a resolver.** `.query()` with no argument produces a contract procedure. This reuses the familiar verbs instead of introducing oRPC's `oc` and `.handler()`. The alternative is a separate `contract.procedure({ type: 'query', input, output })` options bag (see Q9.1).
+
+  ```ts
+  // Q9.1, options bag
+  export const postContract = {
+    byId: contract.procedure({
+      type: 'query',
+      input: z.object({ id: z.string() }),
+      output: Post,
+    }),
+    create: contract.procedure({
+      type: 'mutation',
+      input: NewPost,
+      output: Post,
+    }),
+  };
+  ```
+
 - **`implement()`:**
   - Returns a mirror of the contract tree. Each leaf is a builder pre-loaded with the contract's input, output, errors, meta and route.
   - Allowed: `.use()` (middleware, which may add typed errors only if they are declared in the contract; **open**) and the matching terminal.
   - Not allowed: `.input()` / `.output()`.
   - `impl.router()` checks completeness at the type level and at runtime.
+
+  ```ts
+  impl.post.byId.input(z.object({ slug: z.string() })); // type error: input comes from the contract
+
+  // Q9.3: TOO_MANY_REQUESTS is not declared in appContract
+  const rateLimited = t.middleware(async ({ ctx, next }) =>
+    (await overLimit(ctx)) ? error({ code: 'TOO_MANY_REQUESTS' }) : next(),
+  );
+  impl.post.create.use(rateLimited).mutation(…); // allowed, or a type error?
+  ```
+
+  The alternative in Q9.2 attaches one contract procedure at a time to an ordinary builder:
+
+  ```ts
+  // Q9.2, .implements()
+  export const appRouter = {
+    post: {
+      byId: t.procedure
+        .implements(appContract.post.byId)
+        .use(authed)
+        .query(async ({ input }) => db.post.find(input.id)),
+    },
+  };
+  ```
+
 - **Router to contract:**
   - Type level: `inferContract<typeof appRouter>` strips `ctx`, middleware and services.
   - Runtime: `toContract(router)` emits a minified, JSON-serializable contract (paths, types, routes, JSON Schemas). The OpenAPI link (18), client-side validation and codegen use it.
+
+  ```ts
+  export type AppContract = inferContract<typeof appRouter>; // no ctx, middleware or services
+  export const appContract = toContract(appRouter); // JSON-serializable (Q9.4)
+
+  createTRPCClient<AppContract>({ links: [httpLink({ url })] });
+  createTRPCClient<AppContract>({
+    links: [openAPILink({ url, contract: appContract })],
+  }); // 18
+  ```
+
 - **Runtime enforcement:** `impl.router()` throws if a contract procedure is missing or has the wrong type. Output and error data are validated against contract schemas by the normal output validation (04).
 - **NestJS and other frameworks:** these become a thin adapter over contracts plus `implement`, as in oRPC.
 
@@ -86,9 +139,39 @@ const client = createTRPCClient<typeof appContract>({
 - **K-A** (as above): contract builder sharing the procedure builder's methods, plus `implement`.
 - **K-B:** oRPC-style separate `oc` builder with `.handler()`.
   - ❌ Unfamiliar for tRPC users. It duplicates the builder.
+
+  ```ts
+  // K-B
+  import { oc } from 'trpcdev/contract';
+
+  export const postContract = {
+    byId: oc.input(z.object({ id: z.string() })).output(Post),
+    create: oc.input(NewPost).output(Post),
+  };
+
+  const impl = t.implement({ post: postContract });
+  impl.post.byId.handler(async ({ input }) => db.post.find(input.id));
+  ```
+
 - **K-C:** no dedicated contract builder; contracts are _only_ derived from routers (type-level and `toContract`).
   - ✅ Less API.
   - ❌ Not real contract-first: you cannot write a contract before the implementation. This fails parity.
+
+  ```ts
+  // K-C: no contract package; the router comes first and clients use what is derived from it
+  import type { AppContract } from '@acme/server'; // inferContract<typeof appRouter>
+
+  createTRPCClient<AppContract>({ links: [httpLink({ url })] });
+  ```
+
+> **Spike (2026-10-09):** [`notes/contracts-and-routers-typing.md`](../notes/contracts-and-routers-typing.md).
+>
+> - The Q9.1 terminal and options-bag forms produce identical types.
+> - `t.implement()` leaves expose only `.use()` and the matching terminal.
+> - A non-generic `impl.router()` catches missing procedures (TS2741), extra keys at any depth (TS2353) and wrong outputs. A generic one would lose the extra-key check.
+> - `inferContract<typeof implRouter>` equals the contract.
+> - Q9.2 (b) `.implements()` needs a separate `satisfies` for completeness.
+> - Contract-first costs about 30–35% more type-checking than implementation-first and scales linearly.
 
 ## Recommendation
 

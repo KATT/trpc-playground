@@ -38,7 +38,30 @@
 - **O-B — Describe the RPC protocol only**, as v11 does. With 10's envelope-free protocol, `GET /trpc/post/byId?input=…` is already almost REST.
   - ✅ Nothing new to maintain.
   - ❌ No custom paths or params, and `input=` JSON in query strings is not idiomatic REST.
+
+  ```ts
+  // O-B: no REST handler; the spec describes the existing RPC endpoint
+  const spec = await generateOpenAPI(appRouter, {
+    info: { title: 'API', version: '1.0.0' },
+    servers: [{ url: '/trpc' }],
+  });
+  // GET  /trpc/post/byId?input={"id":"1"}
+  // POST /trpc/post/create   body: { "title": "Hello" }
+  ```
+
 - **O-C — Both.** The generator can document either the RPC endpoint (zero configuration) or the OpenAPI handler (custom routes).
+
+  ```ts
+  // O-C
+  const rpcSpec = await generateOpenAPI(appRouter, {
+    target: 'rpc',
+    servers: [{ url: '/trpc' }],
+  }); // option name TBD
+  const restSpec = await generateOpenAPI(appRouter, {
+    target: 'openapi',
+    servers: [{ url: '/api' }],
+  }); // uses .route()
+  ```
 
 ### (b) Routing and mapping
 
@@ -53,10 +76,53 @@ const spec = await generateOpenAPI(appRouter, { info: { title: 'API', version: '
 ```
 
 - **Defaults without `.route()`:** query → `GET {prefix}/post/byId`, mutation → `POST {prefix}/post/byId`, subscription → `GET` with `text/event-stream`.
+
+  ```ts
+  const appRouter = {
+    post: {
+      byId: t.procedure.input(z.object({ id: z.string() })).query(…), // GET  /api/post/byId?id=1
+      create: t.procedure.input(NewPost).mutation(…), //                   POST /api/post/create
+      onPost: t.procedure.subscription(async function* () { … }), //       GET  /api/post/onPost (text/event-stream)
+    },
+  };
+  ```
+
 - **`inputStructure: 'compact'`:** path params plus query (GET) or body (others) are merged into one input object.
 - **`inputStructure: 'detailed'`:** the input is `{ params, query, headers, body }`. `outputStructure: 'detailed'` returns `{ status, headers, body }`.
+
+  ```ts
+  const update = t.procedure
+    .route({
+      method: 'PATCH',
+      path: '/posts/{id}',
+      inputStructure: 'detailed',
+      outputStructure: 'detailed',
+    })
+    .input(
+      z.object({
+        params: z.object({ id: z.string() }),
+        query: z.object({ notify: z.boolean().optional() }),
+        headers: z.object({ 'if-match': z.string() }),
+        body: z.object({ title: z.string() }),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const post = await db.post.update(input.params.id, input.body);
+      return { status: 200, headers: { etag: post.etag }, body: post };
+    });
+  ```
+
 - **Bracket notation** for query strings and `FormData` (`user[name]=x&tags[]=a`), shared with `action()` forms (15).
 - **Coercion:** strings in query, params and forms are coerced using the input's JSON Schema (number, boolean, date-time, arrays).
+
+  ```ts
+  const list = t.procedure
+    .route({ method: 'GET', path: '/posts' })
+    .input(z.object({ limit: z.number(), tags: z.array(z.string()), author: z.object({ name: z.string() }).optional() }))
+    .query(…);
+  // GET /posts?limit=10&tags[]=a&tags[]=b&author[name]=alex
+  // input: { limit: 10, tags: ['a', 'b'], author: { name: 'alex' } }   ("10" coerced to a number)
+  ```
 
 ### (c) Spec generation
 
@@ -68,14 +134,59 @@ const spec = await generateOpenAPI(appRouter, { info: { title: 'API', version: '
   - Input validation errors produce a standard 400 schema.
 - **Static generator:** v11's TS-compiler-based generator could remain as an optional tool for type-only routers (**open**, Q18.3).
 
+```ts
+const byId = t.procedure
+  .route({ method: 'GET', path: '/posts/{id}' })
+  .errors({ NOT_FOUND: { status: 404, data: z.object({ id: z.string() }) } })
+  .input(z.object({ id: z.string() }))
+  .query(…);
+// responses: 200 (output schema), 400 (validation issues), 404 ({ code: 'NOT_FOUND', data: { id: string } })
+
+const legacy = t.procedure
+  .input(type<{ id: string }>()) // no JSON Schema: documented by hand
+  .route({ spec: (op) => ({ ...op, parameters: [{ name: 'id', in: 'query', required: true, schema: { type: 'string' } }] }) })
+  .query(…);
+
+// static generator (v11 @trpc/openapi): reads types, never runs code
+const doc = await generateOpenAPIDocument('./router.ts');
+```
+
 ### (d) Clients
 
 - `openAPILink({ url, contract })` calls the REST endpoints with the same `createTRPCClient`. It needs a runtime contract (09 `toContract`) for methods and paths.
+
+  ```ts
+  import { createTRPCClient } from 'trpcdev/client';
+  import { openAPILink } from 'trpcdev/openapi';
+  import contract from './contract.json' with { type: 'json' }; // emitted with toContract(appRouter), or a contract-first appContract (09)
+
+  const client = createTRPCClient<AppRouter>({
+    links: [openAPILink({ url: 'https://api.example.com', contract })],
+  });
+  await client.post.byId.query({ id: '1' }); // GET https://api.example.com/posts/1
+  ```
+
 - Generated clients in other languages come from the spec. A Hey API plugin (OpenAPI → tRPC contract) comes later.
 
 ### (e) Docs UI
 
 An `openAPIReference()` handler plugin serves Scalar (or Swagger UI) from a CDN at `/docs`, plus `/openapi.json`.
+
+```ts
+import { createOpenAPIHandler, openAPIReference } from 'trpcdev/openapi';
+
+const openapi = createOpenAPIHandler({
+  router: appRouter,
+  createContext,
+  plugins: [
+    openAPIReference({
+      path: '/docs', // UI at /docs, spec at /openapi.json
+      docsProvider: 'swagger', // default 'scalar' (oRPC's option name)
+      specGenerateOptions: { info: { title: 'API', version: '1.0.0' } }, // same options as generateOpenAPI (oRPC's name)
+    }),
+  ],
+});
+```
 
 ## Recommendation
 

@@ -72,6 +72,19 @@ consume(client.onPost.subscribe({ channel }), { onData, onError, onComplete });
 
 - The primary API is `AsyncIterable` (with `return()` to stop). A callback helper is provided for UI code.
 - Connection state (`connecting` / `pending` / `error`) is exposed through link events or a `state` property on the iterable (**open**).
+
+  ```ts
+  // state property on the iterable
+  const sub = client.onPost.subscribe({ channel });
+  sub.state; // { state: 'connecting', error } | { state: 'pending', error: null } (v11's TRPCConnectionState)
+
+  // link events, surfaced as a callback like v11's onConnectionStateChange
+  consume(sub, {
+    onData,
+    onConnectionStateChange: ({ state }) => setStatus(state),
+  });
+  ```
+
 - Reconnection with `lastEventId` happens automatically for `tracked()` events, using an Effect `Schedule` for backoff.
 
 ### (c) Validation of streamed items
@@ -80,9 +93,43 @@ consume(client.onPost.subscribe({ channel }), { onData, onError, onComplete });
 - **Streamed queries and mutations:** use an explicit `stream(schema)` helper (`.output(stream(Post))`), or oRPC's `eventIterator(yieldSchema, returnSchema)`.
 - **Open:** a single rule for both kinds (always via `stream()`).
 
+```ts
+import { stream } from 'trpcdev/server';
+
+// per kind: .output() validates each subscription event
+const onPost = t.procedure.output(Post).subscription(async function* () { … });
+
+// per kind: a streamed query needs stream()
+const feed = t.procedure.output(stream(Post)).query(async function* () {
+  yield* db.post.cursor();
+});
+
+// oRPC-style alternative to stream(): event schema plus return schema
+const chat = t.procedure.output(eventIterator(Token, Summary)).mutation(async function* () { … });
+
+// single rule: always stream(), subscriptions included
+const onPost = t.procedure.output(stream(Post)).subscription(async function* () { … });
+```
+
 ### (d) Transport
 
 - SSE is read with `fetch` streaming, **not** `EventSource`. Headers, POST bodies and abort work natively, so no polyfill is needed.
+
+  ```ts
+  // v11: headers on subscriptions need an EventSource polyfill
+  httpSubscriptionLink({
+    url,
+    EventSource: EventSourcePolyfill,
+    eventSourceOptions: async () => ({ headers }),
+  });
+
+  // vNext: the same httpLink as queries; SSE over fetch sends headers natively
+  httpLink({
+    url,
+    headers: async () => ({ authorization: `Bearer ${await getToken()}` }),
+  });
+  ```
+
 - The stream format is negotiated per request (10). WebSocket and MessagePort use the shared message model.
 - Backpressure: iterables are pull-based on the server. SSE writes respect the platform's stream backpressure.
 
@@ -93,6 +140,25 @@ consume(client.onPost.subscribe({ channel }), { onData, onError, onComplete });
   - **D-A** Keep: the serializer supports promises and iterables at any path.
   - **D-B** Root-level iterables only in v1; nested deferral later.
   - **D-C** Drop.
+
+  ```ts
+  // D-A: deferred values at any depth
+  const dashboard = t.procedure.query(async () => ({
+    user: await getUser(), // sent in the first chunk
+    stats: getStats(), // Promise<Stats>, streamed when it resolves
+    activity: activityFeed(), // AsyncIterable<Activity>, streamed
+  }));
+  const { user, stats, activity } = await client.dashboard.query();
+  for await (const item of activity) render(item);
+
+  // D-B (v1) and D-C: only the root value may stream; slow parts become their own procedures
+  const dashboard = t.procedure.query(async () => ({ user: await getUser() }));
+  const stats = t.procedure.query(() => getStats());
+  const activity = t.procedure.query(async function* () {
+    yield* activityFeed();
+  });
+  ```
+
 - oRPC supports root-level event iterators only.
 - If 11 adopts danSON, **D-A comes almost for free**. danSON streams `Promise`, `AsyncIterable` and `ReadableStream` values at any depth, which is what v11's JSONL codec does today with a separate implementation. The remaining cost is in types (nested `Promise<…>` in outputs) and in integrations (what TanStack Query does with a nested promise).
 
@@ -100,6 +166,38 @@ consume(client.onPost.subscribe({ channel }), { onData, onError, onComplete });
 
 - Effect users have `PubSub` and `Stream.fromPubSub`. Document these.
 - For Promise users, a small `createPublisher<Events>()` (memory, with optional resume buffer) can be provided. Redis and Durable Object publishers come later, as in oRPC's publisher helpers.
+
+```ts
+// Promise users: method names follow oRPC's MemoryPublisher
+const publisher = createPublisher<{ 'post.created': Post }>();
+
+const onPost = t.procedure.subscription(async function* ({
+  signal,
+  lastEventId,
+}) {
+  for await (const post of publisher.subscribe('post.created', {
+    signal,
+    lastEventId,
+  })) {
+    yield tracked(post.id, post);
+  }
+});
+const create = t.procedure.input(NewPost).mutation(async ({ input }) => {
+  const post = await db.post.create(input);
+  await publisher.publish('post.created', post);
+  return post;
+});
+
+// Effect users: PubSub as a service
+class PostEvents extends Context.Service<PostEvents, PubSub.PubSub<Post>>()(
+  'PostEvents',
+) {}
+
+const onPostEffect = t.procedure.subscription(() =>
+  Stream.unwrap(Effect.map(PostEvents, Stream.fromPubSub)),
+);
+// elsewhere: yield* PubSub.publish(yield* PostEvents, post)
+```
 
 ### (g) Cloudflare hibernation
 

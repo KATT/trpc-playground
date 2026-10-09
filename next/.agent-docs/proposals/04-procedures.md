@@ -37,9 +37,33 @@ Decide which procedure types exist, what a resolver receives and may return, how
 
 - **T-A — Keep three types.** `query` (safe and idempotent, may use GET and be cached), `mutation` (POST) and `subscription` (long-lived stream with reconnect semantics).
   - ✅ Familiar. Integrations need the distinction (TanStack `queryOptions` versus `mutationOptions`, HTTP method, caching).
+
+  ```ts
+  // T-A
+  export const byId = t.procedure
+    .input(z.object({ id: z.string() }))
+    .query(({ input }) => db.post.find(input.id)); // GET, queryOptions
+  export const create = t.procedure
+    .input(NewPost)
+    .mutation(({ input }) => db.post.create(input)); // POST, mutationOptions
+  export const onPost = t.procedure.subscription(async function* () { … }); // SSE or WebSocket
+  ```
+
 - **T-B — oRPC style, one `.handler()`**, with the kind inferred from `.route({ method })`.
   - ✅ Fewer concepts.
   - ❌ Loses semantic intent. Clients cannot choose GET/POST or query/mutation helpers without route metadata.
+
+  ```ts
+  // T-B
+  export const byId = t.procedure
+    .route({ method: 'GET' }) // → query
+    .input(z.object({ id: z.string() }))
+    .handler(({ input }) => db.post.find(input.id));
+  export const create = t.procedure
+    .route({ method: 'POST' }) // → mutation
+    .input(NewPost)
+    .handler(({ input }) => db.post.create(input));
+  ```
 
 ### (b) Resolver options
 
@@ -69,6 +93,42 @@ t.procedure.input(schema).query(async ({ ctx, input, signal, path, meta, respons
 | `File` / `Blob`                                      | Binary response (11)                                                                                                                      |
 | `Response` (raw)                                     | **Open, Q4.3.** Escape hatch from [#6488](https://github.com/trpc/trpc/pull/6488): typed on the client as `Response`, skips serialization |
 
+```ts
+const byIdInput = t.procedure.input(z.object({ id: z.string() }));
+
+byIdInput.query(async ({ input }) => db.post.find(input.id)); // Promise<T>
+byIdInput.query(
+  Effect.fn(function* ({ input }) {
+    const repo = yield* PostRepo;
+    return yield* repo.find(input.id); // Effect<Post, PostNotFound, PostRepo>
+  }),
+);
+byIdInput.query(
+  async ({ input }) =>
+    (await db.post.find(input.id)) ?? error({ code: 'NOT_FOUND' }),
+); // returned error (07)
+t.procedure.query(() => new File([csv], 'export.csv', { type: 'text/csv' })); // File (11)
+t.procedure.subscription(async function* () {
+  yield 1; // AsyncIterable<number> (14)
+});
+```
+
+Raw `Response` (Q4.3):
+
+```ts
+export const download = t.procedure
+  .input(z.object({ id: z.string() }))
+  .query(async ({ input }) => {
+    const body = await storage.stream(input.id);
+    return new Response(body, {
+      headers: { 'content-type': 'application/pdf' },
+    }); // not serialized
+  });
+
+const res = await client.download.query({ id: '1' }); // Response
+const blob = await res.blob();
+```
+
 ### (d) Response headers and status
 
 - **R-A — Mutable handle in resolver and middleware options:**
@@ -86,8 +146,32 @@ t.procedure.input(schema).query(async ({ ctx, input, signal, path, meta, respons
 - **R-B — Return wrapper:** `return respond(created, { status: 201, headers })`.
   - ✅ Pure.
   - ❌ Middleware cannot set headers this way; the output type needs unwrapping.
+
+  ```ts
+  // R-B
+  .mutation(async ({ input }) => {
+    const created = await db.post.create(input);
+    return respond(created, { status: 201, headers: { 'set-cookie': cookie } }); // client output: Post
+  });
+  ```
+
 - **R-C — Endpoint-level only** (`responseMeta`-like plugin hook).
   - ❌ Same pain as v11.
+
+  ```ts
+  // R-C: v11's responseMeta shape, on the handler or as a plugin hook
+  createHandler({
+    router: appRouter,
+    createContext,
+    responseMeta: ({ ctx, info, errors }) => ({
+      status:
+        info?.calls[0]?.path === 'post.create' && !errors.length
+          ? 201
+          : undefined,
+      headers: ctx?.cookie ? { 'set-cookie': ctx.cookie } : {},
+    }),
+  });
+  ```
 
 ### (e) Output validation
 
@@ -95,11 +179,38 @@ t.procedure.input(schema).query(async ({ ctx, input, signal, path, meta, respons
 - An invalid output is an `INTERNAL_SERVER_ERROR` that is never exposed to the client. In development it logs the issues.
 - **Open (Q4.4):** an option to skip output validation in production for performance.
 
+```ts
+export const byId = t.procedure
+  .input(z.object({ id: z.string() }))
+  .output(z.object({ id: z.string(), title: z.string() }))
+  .query(({ input }) => db.post.find(input.id)); // a row without `title` → INTERNAL_SERVER_ERROR, issues logged in dev
+
+// Q4.4
+createHandler({
+  router: appRouter,
+  validateOutput: process.env.NODE_ENV !== 'production',
+}); // name and placement TBD
+```
+
 ### (f) Meta
 
 - Keep `.meta(obj)` with **shallow merge** across chained calls.
 - Default meta is set by calling `.meta()` on the base procedure, so `defaultMeta` disappears from `create()`.
 - Meta is available to middleware and resolvers, and through the router definition (for codegen/OpenAPI).
+
+```ts
+const t = initTRPC.create<{
+  ctx: Context;
+  meta: { auth?: boolean; role?: 'admin'; rateLimit?: number };
+}>();
+
+const base = t.procedure.meta({ auth: false, rateLimit: 100 }); // default meta
+const admin = base.meta({ auth: true, role: 'admin' });
+
+export const stats = admin.meta({ rateLimit: 10 }).query(({ meta }) => meta); // { auth: true, role: 'admin', rateLimit: 10 } (Q4.5)
+
+stats['~trpc'].meta; // the same object, for codegen/OpenAPI (03 (d))
+```
 
 ### (g) Route metadata
 

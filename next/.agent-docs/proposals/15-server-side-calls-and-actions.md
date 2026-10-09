@@ -44,6 +44,18 @@ const post = await caller.post.byId({ id: '1' }); // SC-A: direct call
 - **SC-B — Remote-client shape:** `caller.post.byId.query(input)`. The same type as `createTRPCClient`, so code can switch between local and remote.
   - ❌ More verbose for the common server case. `localLink` (17) already covers "remote shape, in-process".
 
+  ```ts
+  // SC-B
+  const caller = createRouterClient(appRouter, { ctx: createContext });
+  const post = await caller.post.byId.query({ id: '1' });
+  await caller.post.create.mutate({ title: 'Hello' });
+
+  // what localLink gives under SC-A: the remote shape, in-process, with serialization
+  const local = createTRPCClient<AppRouter>({
+    links: [localLink({ router: appRouter, createContext })],
+  });
+  ```
+
 ### (b) Single procedures
 
 ```ts
@@ -68,12 +80,55 @@ const result = await createPost({ title }); // { data: Post } | { error: TypedEr
 ```
 
 - Wrappers instead of `.experimental_caller()` or `.actionable()`. This keeps the builder closed (03) and makes the features tree-shakeable.
+
+  ```ts
+  // Q15.2 builder method (oRPC's .actionable() style), for comparison
+  export const createPost = t.procedure.input(NewPost).mutation(…).actionable({ ctx: createContext });
+  ```
+
 - `action()` accepts an input object _or_ `FormData`. FormData is parsed with bracket notation, the same parser as OpenAPI (18).
+
+  ```tsx
+  // client component: the same action, called with FormData
+  <form
+    action={async (formData) => {
+      const result = await createPost(formData); // validated by createPostProcedure's .input()
+      if ('error' in result) setError(result.error);
+    }}
+  >
+    <input name="title" />
+    <input type="checkbox" name="tags[]" value="news" />{' '}
+    {/* bracket notation: { title, tags: ['news', …] } */}
+    <input type="checkbox" name="tags[]" value="ts" />
+  </form>
+  ```
+
 - Errors are **returned** in a serializable result so their types survive the RSC boundary, as in [#5554](https://github.com/trpc/trpc/pull/5554) and [#5569](https://github.com/trpc/trpc/pull/5569). Unexpected errors are masked (07).
+
+  ```ts
+  // Q15.3 result shapes, on the client
+  const result = await createPost({ title }); // { data } | { error }
+  const [post, error] = await createPost({ title }); // tuple matching safe() (07 Q7.3)
+  const post = await createPost({ title }); // throw: the error type is lost across the RSC boundary
+  ```
 
 ### (d) Framework specifics
 
 - Next.js: `isNextControlFlowError` and a `headers()`-aware context helper. They could live in a tiny `@trpcdev/next` package or in documentation (Q15.4).
+
+  ```ts
+  // Q15.4 package
+  import { isNextControlFlowError } from '@trpcdev/next';
+
+  // Q15.4 docs: a snippet users copy (digest check as in v11's rethrowNextErrors)
+  const isNextControlFlowError = (error: unknown) =>
+    typeof error === 'object' &&
+    error !== null &&
+    'digest' in error &&
+    typeof error.digest === 'string' &&
+    /^NEXT_(REDIRECT|NOT_FOUND|HTTP_ERROR_FALLBACK)\b/.test(error.digest);
+  ```
+
 - React hooks for actions (`useAction`, optimistic updates) belong to 20.
 
 ## Recommendation

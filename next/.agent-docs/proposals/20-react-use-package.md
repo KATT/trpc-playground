@@ -40,11 +40,41 @@ const [state, submit, pending] = useActionState(
 ## Options
 
 - **U-A — Thin layer over TanStack Query.** `use(queryClient.ensureQueryData(trpc.x.queryOptions(…)))` helpers with suspense-friendly utilities. Cache, invalidation and devtools come from TanStack.
+
+  ```tsx
+  // U-A: `trpc` is createTRPCQueryUtils({ client }) from 19
+  function Post({ id }: { id: string }) {
+    const queryClient = useQueryClient();
+    const post = use(
+      queryClient.ensureQueryData(
+        trpc.post.byId.queryOptions({ input: { id } }),
+      ),
+    );
+    return <h1>{post.title}</h1>;
+  }
+  // invalidation, devtools and so on stay TanStack's: queryClient.invalidateQueries(trpc.post.pathFilter())
+  ```
+
 - **U-B — Standalone cache built on links.**
   - A small, Effect-backed cache (`Cache`/`Request` deduplication) that lives in a link (`cacheLink`) and exposes stable promises for `use()`.
   - Link decorations add `{ ignoreCache, revalidate }` call options (17).
   - No TanStack dependency.
   - ❌ A second cache to build, document and maintain.
+
+  ```tsx
+  // U-B: no QueryClient; the cache is a link
+  const client = createTRPCClient({
+    router: type<AppRouter>(),
+    links: [cacheLink(), httpLink({ url })],
+  });
+
+  function Post({ id }: { id: string }) {
+    const post = use(client.post.byId.query({ id })); // same promise for the same key while cached
+    return <h1>{post.title}</h1>;
+  }
+  await client.post.byId.query({ id }, { ignoreCache: true }); // or under `context`, per 17 F-B
+  ```
+
 - **U-C — Defer.** Ship TanStack only. Revisit after users try vNext with React 19 patterns.
 
 ## Recommendation

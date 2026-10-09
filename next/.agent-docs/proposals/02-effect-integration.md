@@ -68,18 +68,74 @@ export const byIdEffect = t.procedure
 - **A2 — Separate Effect flavour.** For example `t.effect.procedure…query(…)` or `initTRPC.effect()`.
   - ✅ Cleaner types; the Promise flavour never references Effect types.
   - ❌ Two builders to document. Moving a procedure between flavours is a rewrite.
+
+  ```ts
+  // A2: Promise procedures stay on t.procedure; Effect procedures use their own builder
+  export const byId = t.procedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ ctx, input }) => ctx.db.post.find(input.id));
+
+  export const byIdEffect = t.effect.procedure // or a root from initTRPC.effect()
+    .input(Schema.Struct({ id: Schema.String }))
+    .query(
+      Effect.fn('post.byId')(function* ({ input }) {
+        const repo = yield* PostRepo;
+        return yield* repo.find(input.id);
+      }),
+    );
+  ```
+
 - **A3 — Generator sugar** (on top of A1 or A2). A sync `function*` resolver is treated as `Effect.gen`, while `async function*` stays a stream: `.query(function* ({ input }) { const repo = yield* PostRepo; … })`.
   - ✅ Shortest Effect syntax.
   - ❌ Magic. It is distinguishable at runtime, but the typing must replicate `Effect.gen`'s inference, and it can be confused with async-generator subscriptions.
+
+  ```ts
+  // A3: sync generator = Effect.gen
+  export const byIdGen = t.procedure
+    .input(Schema.Struct({ id: Schema.String }))
+    .query(function* ({ input }) {
+      const repo = yield* PostRepo;
+      return yield* repo.find(input.id);
+    });
+
+  // async generator = stream, as today
+  export const onPost = t.procedure.subscription(async function* ({ signal }) {
+    for await (const [post] of on(ee, 'post', { signal })) yield post;
+  });
+  ```
 
 ### (b) Services (the `R` channel)
 
 - **S1 — Inferred.** Each procedure's `R` is inferred and the router type carries the union. The endpoint must provide a `Layer` covering it.
   - ✅ Zero declarations.
   - ❌ Computing unions across big routers costs type-checking time. Lazy routers complicate it further.
+
+  ```ts
+  // S1: nothing declared; each procedure's R is inferred
+  const t = initTRPC.create<{ ctx: Ctx }>();
+  export const appRouter = {
+    post: { byId: byIdEffect }, // R = PostRepo
+    mail: { send: sendEffect }, // R = Mailer
+  }; // router R = PostRepo | Mailer
+
+  createHandler({ router: appRouter, layer: PostRepo.layer }); // type error here: Mailer is not provided
+  ```
+
 - **S2 — Declared at the root.** `initTRPC.create<{ ctx: Ctx; services: PostRepo | Mailer }>()`. Resolvers may only require declared services (checked where the procedure is defined), and the endpoint must provide `Layer<PostRepo | Mailer>`.
   - ✅ Cheap types, explicit wiring, good error locality.
   - ❌ One more thing to declare.
+
+  ```ts
+  // S2
+  const t = initTRPC.create<{ ctx: Ctx; services: PostRepo | Mailer }>();
+
+  export const charge = t.procedure.mutation(
+    Effect.fn(function* () {
+      const billing = yield* Billing; // type error here: Billing is not a declared service
+      return yield* billing.charge();
+    }),
+  );
+  ```
 
 ```ts
 const handler = createHandler({
@@ -89,9 +145,29 @@ const handler = createHandler({
 });
 ```
 
+> **Spike (2026-10-09):** [`notes/effect-services-typing.md`](../notes/effect-services-typing.md).
+>
+> - S1's router-wide union is cheap: about 9% more instantiations than S2 and no measurable check time at 1k–2k procedures. The cost concern above doesn't hold.
+> - Both reject an incomplete `layer`. An explicit check is needed to name the missing service, because `Layer`'s own variance error is unreadable.
+> - S2 needs the declared set to reach `createHandler`, and plain-object routers (08 A) don't carry it.
+
 ### (c) `ctx` versus services
 
 Keep `ctx` as the universal dependency-injection mechanism, since Promise users need it. Services are an _additional_ channel for Effect users. Middleware may provide services as well as context (`Effect.provideService`). This mirrors `effect/rpc`'s `RpcMiddleware` with `provides`. See 06.
+
+```ts
+export const myPost = t.procedure
+  .input(Schema.Struct({ id: Schema.String }))
+  .query(
+    Effect.fn(function* ({ ctx, input }) {
+      const repo = yield* PostRepo; // service: Effect users only
+      const post = yield* repo.find(input.id);
+      if (post.authorId !== ctx.user.id)
+        return yield* error({ code: 'FORBIDDEN' }); // ctx: everyone
+      return post;
+    }),
+  );
+```
 
 ### (d) Mapping the `E` channel to wire errors
 
@@ -102,6 +178,32 @@ Keep `ctx` as the universal dependency-injection mechanism, since Promise users 
 
   Option (ii) is stricter and avoids silently swallowing typed failures.
 
+  ```ts
+  class PostNotFound extends Schema.TaggedError<PostNotFound>()(
+    'PostNotFound',
+    { id: Schema.String },
+  ) {}
+
+  const find = Effect.fn(function* ({ input }: { input: { id: string } }) {
+    const repo = yield* PostRepo;
+    return yield* repo.find(input.id); // E = PostNotFound
+  });
+
+  // d.i: compiles; the client sees INTERNAL_SERVER_ERROR (defined: false) and the failure is logged
+  t.procedure.input(Schema.Struct({ id: Schema.String })).query(find);
+
+  // d.ii: the line above is a type error; map the failure first
+  t.procedure
+    .input(Schema.Struct({ id: Schema.String }))
+    .query((opts) =>
+      find(opts).pipe(
+        Effect.catchTag('PostNotFound', (e) =>
+          error({ code: 'NOT_FOUND', data: { id: e.id } }),
+        ),
+      ),
+    );
+  ```
+
 - Defects (`Effect.die`, thrown exceptions) are always `INTERNAL_SERVER_ERROR`. Interruption maps to client abort or `CLIENT_CLOSED_REQUEST`.
 
 ### (e) Runtime and lifecycle
@@ -110,6 +212,23 @@ Keep `ctx` as the universal dependency-injection mechanism, since Promise users 
 - Effect users pass a `layer` (built into a `ManagedRuntime` per handler) or a `runtime` they own. `handler.dispose()` releases resources.
 - Request `AbortSignal` interrupts the fiber. `Effect.runPromise(effect, { signal })` already supports this.
 - Tracing: every procedure call runs in `Effect.withSpan('trpc.<path>')`, so `@effect/opentelemetry` works without extra tRPC code. That covers oRPC's OpenTelemetry integration.
+
+```ts
+// Promise users: nothing to configure
+const handler = createHandler({ router: appRouter, createContext });
+
+// Effect users: a layer (built into a ManagedRuntime per handler) …
+const handler = createHandler({
+  router: appRouter,
+  createContext,
+  layer: AppLayer,
+});
+// … or a runtime they own
+const runtime = ManagedRuntime.make(AppLayer);
+const handler = createHandler({ router: appRouter, createContext, runtime });
+
+await handler.dispose(); // releases the layer's resources
+```
 
 ### (f) Effect client
 
@@ -140,6 +259,11 @@ It lives in `trpcdev/effect`. Per `ideas.md`, anything without an external depen
 - `effect` is a peer dependency, `^4` (01).
 - Our **public** types use only `@stability stable` Effect APIs.
 - Internal use of `@stability unstable` modules (`effect/http`, `effect/rpc`, …) is allowed only behind our own abstractions, with a CI job that tests against the latest Effect minor.
+
+```jsonc
+// trpcdev/package.json
+{ "peerDependencies": { "effect": "^4" } }
+```
 
 ## Recommendation
 

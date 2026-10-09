@@ -72,7 +72,26 @@
 ### (b) Operation result model
 
 - **OR-A:** every operation returns a `Stream`. A query is a one-element stream. This gives the simplest link code and makes interceptors uniform.
+
+  ```ts
+  // OR-A: one path for queries, mutations and subscriptions
+  // (`link.effect` is L-B's Effect variant; under L-A it is plain `link`)
+  const logLink = link.effect(({ op, next }) =>
+    next(op).pipe(Stream.tap((result) => Effect.log(op.path, result))),
+  );
+  ```
+
 - **OR-B:** separate `request` (`Effect`) and `stream` (`Stream`) paths. This is more precise but doubles link code.
+
+  ```ts
+  // OR-B: the same link written twice
+  const logLink = link.effect({
+    request: ({ op, next }) =>
+      next(op).pipe(Effect.tap((result) => Effect.log(op.path, result))),
+    stream: ({ op, next }) =>
+      next(op).pipe(Stream.tap((result) => Effect.log(op.path, result))),
+  });
+  ```
 
 ### (c) How links inform call options and context
 
@@ -100,6 +119,26 @@ The client merges the declarations of all links into its call-options type. The 
 - **F-A:** top-level call options, `query(input, { ignoreCache: true })`. This is the nicest syntax, but there is a risk of name clashes between links.
 - **F-B:** always under `context`, `query(input, { context: { ignoreCache: true } })`. Explicit and clash-free, like oRPC's `ClientContext`.
 
+```ts
+const client = createTRPCClient({
+  router: type<AppRouter>(),
+  links: [cacheLink(), httpLink({ url })],
+});
+
+// F-A
+await client.post.byId.query({ id: '1' }, { signal, ignoreCache: true });
+// F-B
+await client.post.byId.query(
+  { id: '1' },
+  { signal, context: { ignoreCache: true } },
+);
+// both: httpLink's own context
+await client.post.byId.query(
+  { id: '1' },
+  { context: { headers: { 'x-trace': traceId } } },
+);
+```
+
 ### (e) Built-in links
 
 | Link              | Replaces                                                           | Notes                                                                                |
@@ -112,6 +151,52 @@ The client merges the declarations of all links into its call-options type. The 
 | `retryLink`       | retryLink                                                          | `{ retries, delay }` or an Effect `Schedule`; honours `retry-after`                  |
 | `loggerLink`      | loggerLink                                                         |                                                                                      |
 | `dedupeLink`      | internal dedupeLink                                                | Dedupe identical in-flight queries (**open**: on by default inside `httpLink`?)      |
+
+```ts
+import {
+  createTRPCClient,
+  dedupeLink,
+  httpLink,
+  localLink,
+  loggerLink,
+  messagePortLink,
+  retryLink,
+  splitLink,
+  wsLink,
+} from 'trpcdev/client';
+
+const client = createTRPCClient({
+  router: type<AppRouter>(),
+  links: [
+    loggerLink(),
+    dedupeLink(),
+    retryLink({ retries: 3, delay: 1000 }), // or an Effect Schedule: Schedule.exponential('100 millis')
+    splitLink({
+      condition: (op) =>
+        op.type === 'subscription' || op.context.transport === 'ws',
+      true: wsLink({
+        url: 'wss://api.example.com/trpc',
+        connectionParams: async () => ({ token: await getToken() }),
+      }),
+      false: httpLink({
+        url: '/trpc',
+        batch: { maxItems: 10, maxURLLength: 2048 },
+      }),
+    }),
+  ],
+});
+
+// tests and SSR: in-process, with serialization
+createTRPCClient({
+  router: type<AppRouter>(),
+  links: [localLink({ router: appRouter, createContext })],
+});
+// Electron, workers, iframes
+createTRPCClient({
+  router: type<AppRouter>(),
+  links: [messagePortLink({ port: worker })],
+}); // option name TBD
+```
 
 ## Recommendation
 

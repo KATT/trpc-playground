@@ -70,6 +70,38 @@ createHandler({
 
 **Open:** whether `onCall` should also be available as untyped "global middleware". This would answer some of the router-level middleware demand from 06 (e).
 
+```ts
+// onCall as global middleware: runs for every procedure; ctx and input are unknown
+const timing: HandlerPlugin = {
+  name: 'timing',
+  onCall: async ({ path, type, next }) => {
+    const start = performance.now();
+    const result = await next();
+    log(`${type} ${path}: ${performance.now() - start}ms`);
+    return result;
+  },
+};
+createHandler({ router, plugins: [timing] });
+
+// The typed alternative stays a base procedure (06 (e))
+const procedure = t.procedure.use(async ({ path, next }) => {
+  const start = performance.now();
+  const result = await next();
+  log(`${path}: ${performance.now() - start}ms`);
+  return result;
+});
+```
+
+The same hook as an Effect, for plugins that need services or spans:
+
+```ts
+const tracing: HandlerPlugin = {
+  name: 'tracing',
+  onCall: ({ path, next }) =>
+    Effect.promise(next).pipe(Effect.withSpan(`trpc.${path}`)),
+};
+```
+
 ## First-party plugins (proposed)
 
 | Plugin            | Default        | Notes                                                                                      |
@@ -83,6 +115,46 @@ createHandler({
 | `compression`     | off            | `CompressionStream`-based; may be better left to the platform                              |
 | `rateLimit`       | later          | Effect-based, store as a service (memory, Redis, CF Durable Object)                        |
 | `tracing`         | later          | Effect spans exported via `@effect/opentelemetry`; may just be docs                        |
+
+How first-party plugins would be written against `onRequest`:
+
+```ts
+// cors: origin allow-list and preflight
+const cors = (opts: { origin: string[] }): HandlerPlugin => ({
+  name: 'cors',
+  onRequest: async ({ request, next }) => {
+    const origin = request.headers.get('origin');
+    const response =
+      request.method === 'OPTIONS'
+        ? new Response(null, { status: 204 })
+        : await next();
+    if (origin && opts.origin.includes(origin)) {
+      response.headers.set('access-control-allow-origin', origin);
+      response.headers.append('vary', 'origin');
+    }
+    return response;
+  },
+});
+
+// csrf: a POST needs a non-simple content type or a trpc-* header
+const csrf = (): HandlerPlugin => ({
+  name: 'csrf',
+  onRequest: async ({ request, next }) => {
+    const type = request.headers.get('content-type') ?? '';
+    const simple =
+      /^(text\/plain|application\/x-www-form-urlencoded|multipart\/form-data)/.test(
+        type,
+      );
+    const trpcHeader = [...request.headers.keys()].some((key) =>
+      key.startsWith('trpc-'),
+    );
+    if (request.method === 'POST' && simple && !trpcHeader) {
+      return new Response(null, { status: 403 });
+    }
+    return next();
+  },
+});
+```
 
 ## Recommendation
 

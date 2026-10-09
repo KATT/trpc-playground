@@ -44,6 +44,24 @@ This is separate from the OpenAPI endpoint (18), which maps procedures to REST.
 
 ### A — Keep the v11 protocol
 
+```http
+GET /trpc/post.byId?input=%7B%22id%22%3A1%7D
+
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"result":{"data":{"id":1,"title":"Hello"}}}
+```
+
+```http
+GET /trpc/post.byId,post.list?batch=1&input=%7B%220%22%3A%7B%22id%22%3A1%7D%2C%221%22%3A%7B%7D%7D
+
+HTTP/1.1 207 Multi-Status
+content-type: application/json
+
+[{"result":{"data":{"id":1,"title":"Hello"}}},{"error":{"message":"…","code":-32004,"data":{"code":"NOT_FOUND","httpStatus":404,"path":"post.list"}}}]
+```
+
 - ✅ Old clients keep working.
 - ❌ Keeps all the pain. `ideas.md` explicitly allows breaking changes, and a back-compat adapter can be added later behind the version header.
 
@@ -58,11 +76,48 @@ This is separate from the OpenAPI endpoint (18), which maps procedures to REST.
 | Streamed / subscription | Same URL. `accept: text/event-stream` (SSE) or `application/jsonl` selects the stream format                                                                                               |
 | Files                   | `multipart/form-data` (11)                                                                                                                                                                 |
 
+A query with legible params, the same query above the URL length threshold (POST, or `QUERY` per Q10.3), and a mutation. With `.` as the separator (Q10.2) the paths would read `/trpc/post.byId`.
+
+```http
+GET /trpc/post/byId?id=1
+
+POST /trpc/post/search
+content-type: application/json
+
+{"json":{"q":"…a very long query…","tags":["a","b"]}}
+
+QUERY /trpc/post/search
+content-type: application/json
+
+{"json":{"q":"…a very long query…","tags":["a","b"]}}
+
+POST /trpc/post/create
+content-type: application/json
+
+{"json":{"title":"Hello","publishAt":{"_":"$","type":"Date","value":"2026-10-09T00:00:00.000Z"}}}
+```
+
 #### Bodies and responses
 
 - **Body:** the serialized input (11). With the default danSON-based serializer, inline markers only appear where there are non-JSON values, so most bodies read as plain JSON. **Open:** drop danSON's `{ json }` wrapper when there are no `refs`.
 - **Success:** `2xx` with the serialized output and no envelope. The default status is 200; 201 and others can be set via `response.status` (04).
 - **Error:** the status comes from the error (07), with body `{ error: { code, message, data, defined } }` (serialized). Clients detect errors by status ≥ 400.
+
+Shown with danSON's `{ json }` wrapper kept:
+
+```http
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"json":{"id":1,"title":"Hello","createdAt":{"_":"$","type":"Date","value":"2026-10-09T00:00:00.000Z"}}}
+```
+
+```http
+HTTP/1.1 404 Not Found
+content-type: application/json
+
+{"json":{"error":{"code":"NOT_FOUND","message":"Post not found","data":{"id":1},"defined":true}}}
+```
 
 #### Batching
 
@@ -72,11 +127,52 @@ Batching is opt-in on both server and client.
 - **Response:** `application/jsonl`, one line per call as each finishes: `{ i, status, body }`. Each call keeps its own status.
 - A `maxBatchSize` default (for example 20) and a body size limit apply.
 
+```http
+POST /trpc
+trpc-batch: 1
+content-type: application/json
+
+[{"path":"post/byId","input":{"json":{"id":1}}},{"path":"post/byId","input":{"json":{"id":2}}}]
+
+HTTP/1.1 200 OK
+content-type: application/jsonl
+
+{"i":1,"status":404,"body":{"json":{"error":{"code":"NOT_FOUND","message":"Post not found","data":{"id":2},"defined":true}}}}
+{"i":0,"status":200,"body":{"json":{"id":1,"title":"Hello"}}}
+```
+
 #### Streaming
 
 - Streams use the serializer's async format (danSON: a head chunk, then `[index, status, { json }]` chunks), so a stream can be the root value or nested anywhere in an output (14 (e)).
 - **JSONL:** one chunk per line.
 - **SSE:** one chunk per `data:` event. `id:` comes from `tracked()` (14), and streams resume with `Last-Event-ID`.
+
+A query whose output has a nested `Promise`, over JSONL, and a resumed subscription over SSE:
+
+```http
+GET /trpc/post/stats?id=1
+accept: application/jsonl
+
+HTTP/1.1 200 OK
+content-type: application/jsonl
+
+{"json":{"views":10,"comments":{"_":"$","type":"Promise","value":1}}}
+[1,0,{"json":3}]
+```
+
+```http
+GET /trpc/onPost?channel=general
+accept: text/event-stream
+last-event-id: post_41
+
+HTTP/1.1 200 OK
+content-type: text/event-stream
+
+data: {"json":{"_":"$","type":"AsyncIterable","value":1}}
+
+id: post_42
+data: [1,0,{"json":{"id":"post_42","title":"Hello"}}]
+```
 
 #### WebSocket and MessagePort
 
@@ -93,11 +189,35 @@ One message model for both:
 - The first message may be `{ type: 'init', connectionParams, version }`.
 - Messages are self-contained, so a hibernating server can rebuild state from storage (14).
 
+A subscription over a WebSocket (`→` client to server, `←` server to client). `method` is shown as the procedure type, as in v11's WebSocket messages; the prose above does not pin its values.
+
+```text
+→ {"type":"init","connectionParams":{"token":"…"},"version":"1"}
+→ {"id":1,"type":"request","path":"onPost","input":{"json":{"channel":"general"}},"method":"subscription"}
+← {"id":1,"type":"event","body":{"json":{"id":"post_42","title":"Hello"}},"eventId":"post_42"}
+← {"id":1,"type":"event","body":{"json":{"id":"post_43","title":"World"}},"eventId":"post_43"}
+→ {"id":1,"type":"abort"}
+← {"id":1,"type":"done"}
+```
+
 #### Versioning
 
 - Clients send `trpc-version: <protocol version>`; servers reply with the same header.
 - A mismatch returns a typed `UNSUPPORTED_PROTOCOL` error.
 - A future v11-compat handler can be selected on this header.
+
+`1` stands in for the first protocol version; the header name is Q10.6.
+
+```http
+GET /trpc/post/byId?id=1
+trpc-version: 1
+
+HTTP/1.1 200 OK
+trpc-version: 1
+content-type: application/json
+
+{"json":{"id":1,"title":"Hello"}}
+```
 
 #### Secure defaults
 
@@ -108,6 +228,20 @@ One message model for both:
 ### C — Adopt oRPC's RPC protocol verbatim
 
 `{ json, meta }`, `/rpc/planet/create`, batch header `x-orpc-batch`.
+
+```http
+POST /rpc/post/create
+content-type: application/json
+
+{"json":{"title":"Hello","publishAt":"2026-10-09T00:00:00.000Z"},"meta":[[1,"publishAt"]]}
+
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"json":{"id":"1","title":"Hello","publishAt":"2026-10-09T00:00:00.000Z"},"meta":[[1,"publishAt"]]}
+```
+
+Errors are `{ json: { defined, code, status, message, data }, meta }` with a 4xx/5xx status.
 
 - ✅ Interop with oRPC clients and tooling.
 - ❌ Ties our evolution to theirs. Its prefixes and type codes are oRPC-specific, and there is little real user benefit.

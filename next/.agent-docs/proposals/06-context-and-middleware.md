@@ -54,6 +54,17 @@ createHandler({
 - **N-A — Keep `next({ ctx: { user } })`.** Leaves room for `next({ ctx, input })`.
 - **N-B — `next({ user })`** ([#6587](https://github.com/trpc/trpc/pull/6587)). Shorter, but blocks future `next` options.
 
+```ts
+// N-A
+t.procedure.use(async ({ ctx, next }) =>
+  next({ ctx: { user: await getUser(ctx.token) } }),
+);
+// N-B
+t.procedure.use(async ({ ctx, next }) =>
+  next({ user: await getUser(ctx.token) }),
+);
+```
+
 ### (c) Middleware results and short-circuiting
 
 ```ts
@@ -88,25 +99,104 @@ t.procedure.use(withOrg); // type error: requires input.orgId and ctx.db
 - This is the replacement for `experimental_standaloneMiddleware`. It matches oRPC's "dependent context".
 - **Open:** oRPC-style `mapInput` (`.use(mw, (input) => input.id)`) to adapt input shapes.
 
+  ```ts
+  t.procedure
+    .input(z.object({ post: z.object({ orgId: z.string() }) }))
+    .use(withOrg, (input) => ({ orgId: input.post.orgId }));
+  ```
+
+> **Spike (2026-10-09):** [`notes/middleware-and-input-typing.md`](../notes/middleware-and-input-typing.md).
+>
+> - Standalone middleware needs no special `.use()` overload. `middleware<{ ctx; input }>()(fn)` is identity, and unmet requirements fail through parameter contravariance with a readable "Property 'orgId' is missing".
+> - `mapInput` is an arity overload.
+> - `ok(data)` can't be typed at the call site, because the output isn't known yet. The builder collects the short-circuit types and checks them at the terminal, so the error lands on the resolver.
+
 ### (e) Composition
 
 - Keep `.concat(otherProcedureBuilder)` and `pipe` (stable, no `unstable_`).
+
+  ```ts
+  const authed = t.middleware(async ({ ctx, next }) =>
+    next({ ctx: { user: await getUser(ctx.token) } }),
+  );
+  const authedWithOrg = authed.pipe(async ({ ctx, next }) =>
+    next({ ctx: { org: await ctx.db.org(ctx.user.orgId) } }),
+  ); // was unstable_pipe
+
+  // auditProcedure: a procedure builder published by a library
+  export const orgProcedure = t.procedure
+    .use(authedWithOrg)
+    .concat(auditProcedure);
+  ```
+
 - **Router-level middleware** (`t.router(routes, { use: [mw] })` or oRPC's `os.use(mw).router(…)`):
   - ✅ Frequently requested.
   - ❌ Ordering and duplication problems (oRPC needs a dedupe mechanism), and it is less explicit than base procedures.
   - **Recommendation: not in v1.**
 
+  ```ts
+  // router-level middleware (not in v1)
+  export const adminRouter = t.router(adminRoutes, { use: [authed] });
+  // the same in oRPC
+  export const adminRouter = os.use(authed).router({ listUsers, banUser });
+
+  // v1: a base procedure
+  const adminProcedure = t.procedure.use(authed);
+  export const adminRouter = {
+    listUsers: adminProcedure.query(…),
+    banUser: adminProcedure.input(…).mutation(…),
+  };
+  ```
+
 ### (f) Lifecycle helpers
 
 `onStart`, `onSuccess`, `onError` and `onFinish` as middleware factories, as in oRPC. They are trivial to provide and remove a lot of boilerplate.
+
+```ts
+import { onError, onFinish, onStart, onSuccess } from 'trpcdev/server';
+
+const loggedProcedure = t.procedure
+  .use(onStart(({ path }) => log.info('start', path)))
+  .use(onSuccess((data, { path }) => log.info('ok', path)))
+  .use(onError((error, { path }) => report(error, path)))
+  .use(onFinish(() => metrics.increment('calls')));
+```
 
 ### (g) Effect middleware
 
 - Effect middleware returns an Effect. `next()` must then also be an Effect. Options:
   - **M-A** A separate constructor, `t.middleware.effect(fn)` or `Middleware.effect(fn)`, where `next()` returns an `Effect`.
+
+    ```ts
+    // M-A
+    const authed = t.middleware.effect(({ ctx, next }) =>
+      Effect.gen(function* () {
+        const user = yield* verify(ctx.token);
+        return yield* next({ ctx: { user } }); // next() returns an Effect
+      }),
+    );
+    ```
+
   - **M-B** `next()` returns a value that is both `PromiseLike` and yieldable (`yield* next()`) in Effect generators.
     - ✅ No new API.
     - ❌ Too clever; confusing types.
+
+    ```ts
+    // M-B: one constructor; the same next() is awaited or yielded
+    const timed = t.middleware(async ({ next }) => {
+      const start = Date.now();
+      const result = await next();
+      log.info('took', Date.now() - start);
+      return result;
+    });
+    const authed = t.middleware(({ ctx, next }) =>
+      Effect.gen(function* () {
+        const user = yield* verify(ctx.token);
+        return yield* next({ ctx: { user } });
+      }),
+    );
+    ```
+
 - **Providing services** (the Effect analogue of extending `ctx`):
 
   ```ts
@@ -119,6 +209,8 @@ t.procedure.use(withOrg); // type error: requires input.orgId and ctx.db
   ```
 
   The typing of "removes `CurrentUser` from R" needs a spike. It may land after v1.
+
+> **Spike (2026-10-09):** [`notes/effect-services-typing.md`](../notes/effect-services-typing.md). M-A with a declared `provides` works. `next()` requires the provided services, so a body that forgets to provide them is a type error (the `effect/rpc` `RpcMiddleware` trick). Procedures after the middleware drop the service from `R` and gain the middleware's own `R` and errors. The provided set can't be inferred from `Effect.provideService` on an opaque `next()`.
 
 ## Recommendation
 

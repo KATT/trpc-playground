@@ -88,7 +88,34 @@ createOpenAPIHandler({ router }); // always plain JSON + bracket notation + coer
 - **S-C — Plain JSON by default; rich serializer opt-in.** This is v11's model without superjson.
 - **S-D — Bring your own** (superjson, devalue) via an interface, with no built-in.
 
+The output `{ id: 1, createdAt: new Date('2026-10-09') }` on the wire:
+
+```text
+S-A  {"json":{"id":1,"createdAt":{"_":"$","type":"Date","value":"2026-10-09T00:00:00.000Z"}}}
+S-B  {"json":{"id":1,"createdAt":"2026-10-09T00:00:00.000Z"},"meta":[[1,"createdAt"]]}
+S-C  {"id":1,"createdAt":"2026-10-09T00:00:00.000Z"}          client sees createdAt: string
+S-D  with superjson: {"json":{"id":1,"createdAt":"2026-10-09T00:00:00.000Z"},"meta":{"values":{"createdAt":["Date"]}}}
+```
+
+```ts
+// S-C: plain JSON unless the endpoint and link opt in
+createHandler({ router, serializer: serializer() });
+httpLink({ url, serializer: serializer() });
+
+// S-D: no built-in; every endpoint and link is given one
+import superjson from 'superjson';
+createHandler({ router, serializer: superjson }); // interface TBD
+httpLink({ url, serializer: superjson });
+```
+
 **How danSON gets in:** porting the code (KATT owns it) keeps the "only Effect" dependency rule. Depending on the `danson` npm package would be simpler but adds a dependency. **Open:** keep wire compatibility with standalone `danson`, so it can decode tRPC payloads.
+
+```ts
+// wire-compatible: a consumer without trpcdev decodes a response with danson
+import { parseSync } from 'danson';
+
+const post = parseSync(await (await fetch(`${base}/post/byId?id=1`)).text());
+```
 
 ### (c) Legible query params for GET inputs
 
@@ -119,6 +146,22 @@ Types follow the RPC serializer, which no longer appears on the router. Options:
 - **CT-B — The serializer becomes a client type parameter**, with a default.
 - **CT-C — The router declares a type-only capability** (`initTRPC.create<{ ctx; serializer: 'json' }>()`), and endpoints are checked against it.
 
+```ts
+// CT-A
+const post = await client.post.byId.query({ id: 1 });
+post.createdAt; // Date, over any RPC endpoint
+// via openAPILink (18): string
+
+// CT-B
+createTRPCClient<AppRouter>({ links }); // createdAt: Date (default)
+createTRPCClient<AppRouter, { serializer: 'json' }>({ links }); // createdAt: string; shape TBD
+
+// CT-C
+const t = initTRPC.create<{ ctx: Context; serializer: 'json' }>();
+// every client of this router sees createdAt: string
+createHandler({ router: appRouter, serializer: appSerializer }); // checked against 'json'
+```
+
 ### (e) Hardening (inputs are untrusted)
 
 - Null-prototype objects (danSON's `createObject`). Reject `__proto__`, `constructor` and `prototype` keys.
@@ -126,11 +169,66 @@ Types follow the RPC serializer, which no longer appears on the router. Options:
 - **Separate allow-lists for inputs and outputs.** For example `RegExp` is output-only by default (ReDoS), and deferred types (`Promise`, `AsyncIterable`, `ReadableStream`) are rejected in inputs in v1 (no client-to-server streaming yet).
 - Custom deserializers only receive JSON values and never evaluate code.
 
+```ts
+createHandler({
+  router,
+  serializer: appSerializer,
+  limits: { maxDepth: 64, maxRefs: 1_000, maxStreamChunks: 10_000 }, // names TBD
+});
+
+// rejected in inputs by default, before the resolver runs:
+// {"json":{"__proto__":{…}}}                                     forbidden key
+// {"json":{"q":{"_":"$","type":"RegExp","value":…}}}             RegExp is output-only
+// {"json":{"later":{"_":"$","type":"Promise","value":1}}}        no deferred inputs in v1
+```
+
 ### (f) Files and blobs
 
 - `File` and `Blob` are serializer types. In requests they reference multipart parts: `{ "_": "$", "type": "File", "value": { "part": 0, "name": "a.png", "type": "image/png" } }`, with the bytes in part `0` of `multipart/form-data`. They can appear anywhere in the input. Schemas validate them (`z.file()`, `Schema.instanceOf(File)`).
 - A root-level `File`/`Blob` output is sent as a binary response with `content-type`/`content-disposition`. Nested blobs in outputs could become danSON `ReadableStream` chunks (**open**).
 - Large uploads stay out of scope (use presigned URLs). Body limits apply (13).
+
+```ts
+const setCover = t.procedure
+  .input(z.object({ postId: z.string(), cover: z.file() }))
+  .mutation(({ input }) => storage.put(input.postId, input.cover));
+
+const avatar = t.procedure
+  .input(z.object({ userId: z.string() }))
+  .query(({ input }) => storage.avatar(input.userId)); // returns a File
+
+await client.post.setCover.mutate({ postId: '1', cover: file }); // sent as multipart
+const img = await client.user.avatar.query({ userId: 'u1' }); // File
+```
+
+On the wire (`input` as the name of the JSON part is a placeholder):
+
+```http
+POST /trpc/post/setCover
+content-type: multipart/form-data; boundary=b
+
+--b
+content-disposition: form-data; name="input"
+content-type: application/json
+
+{"json":{"postId":"1","cover":{"_":"$","type":"File","value":{"part":0,"name":"a.png","type":"image/png"}}}}
+--b
+content-disposition: form-data; name="0"; filename="a.png"
+content-type: image/png
+
+<bytes>
+--b--
+```
+
+```http
+GET /trpc/user/avatar?userId=u1
+
+HTTP/1.1 200 OK
+content-type: image/png
+content-disposition: attachment; filename="avatar.png"
+
+<bytes>
+```
 
 ## Recommendation
 

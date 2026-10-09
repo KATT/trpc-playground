@@ -62,9 +62,27 @@ TanStack Query helpers use an options bag regardless (`queryOptions({ input })`;
 - `context` is **typed**: links declare the context they read, for example `httpLink` reads `{ headers?: HeadersInit }` and `splitLink` reads `{ transport?: 'ws' | 'http' }` (17).
 - **Link-defined options:** links can add top-level call options (`{ ignoreCache: true }`), as [#5498](https://github.com/trpc/trpc/pull/5498) explored. Whether these go top-level or under `context` is decided in 17.
 
+```ts
+await client.post.byId.query(
+  { id: '1' },
+  { signal, context: { headers: { 'x-trace': traceId } } },
+); // httpLink
+await client.post.byId.query({ id: '1' }, { context: { transport: 'ws' } }); // splitLink
+await client.post.byId.query({ id: '1' }, { context: { transport: 'sse' } }); // type error
+
+// with cacheLink() installed (17 (d))
+await client.post.byId.query({ id: '1' }, { ignoreCache: true }); // F-A
+await client.post.byId.query({ id: '1' }, { context: { ignoreCache: true } }); // F-B
+```
+
 ### (c) Subscriptions
 
 `client.onPost.subscribe(input, { signal, lastEventId })` returns an `AsyncIterable`, plus a `consume()` helper (14).
+
+```ts
+for await (const post of client.onPost.subscribe({ channel }, { signal })) render(post);
+consume(client.onPost.subscribe({ channel }), { onData, onError, onComplete });
+```
 
 ### (d) Errors
 
@@ -72,6 +90,22 @@ TanStack Query helpers use an options bag regardless (`queryOptions({ input })`;
 - Transport failures (network, abort, parse) are `defined: false` errors with codes such as `CLIENT_CLOSED_REQUEST` and `NETWORK_ERROR` (**open**: a new code, or an `isNetworkError` property).
 - `safe(promise)` works as in v11.
 - `createSafeClient(client)` is an oRPC-style wrapper that applies `safe()` to every call (**open**).
+
+```ts
+const [post, error] = await safe(client.post.byId.query({ id }, { signal })); // tuple shape per 07 Q7.3
+if (error?.defined && error.code === 'NOT_FOUND') error.data.id; // typed per procedure
+
+// transport failures are defined: false
+if (error && !error.defined) {
+  if (error.code === 'NETWORK_ERROR') showOffline(); // Q16.4 new codes
+  if (error.isNetworkError) showOffline(); // Q16.4 flag
+  if (error.code === 'CLIENT_CLOSED_REQUEST') return; // aborted
+}
+
+// createSafeClient: every call returns the safe() result
+const safeClient = createSafeClient(client);
+const [post, error] = await safeClient.post.byId.query({ id });
+```
 
 ### (e) Typing source
 
@@ -83,9 +117,37 @@ createTRPCClient<inferContract<AppRouter>>({ links }); // portable router contra
 
 How links' context and options flow into the client type is the hard part, decided in 17.
 
+The `links` argument itself is Q16.6:
+
+```ts
+// array (v11)
+createTRPCClient<AppRouter>({ links: [loggerLink(), httpLink({ url })] });
+
+// single composed link (oRPC style)
+createTRPCClient<AppRouter>({ link: httpLink({ url }) });
+createTRPCClient<AppRouter>({
+  link: splitLink({
+    condition: (op) => op.type === 'subscription',
+    true: wsLink({ url }),
+    false: httpLink({ url }),
+  }),
+});
+```
+
 ### (f) Untyped client and dynamic use
 
 `createUntypedClient({ links }).request({ path, type, input })` remains as an advanced, stable API. Integrations use it.
+
+```ts
+import { createUntypedClient, httpLink } from 'trpcdev/client';
+
+const untyped = createUntypedClient({ links: [httpLink({ url })] });
+const post = await untyped.request({
+  path: 'post.byId',
+  type: 'query',
+  input: { id: '1' },
+}); // unknown
+```
 
 ## Recommendation
 

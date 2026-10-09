@@ -50,18 +50,55 @@ export type AppRouter = typeof appRouter;
 
 ### B — Keep mandatory `t.router()`
 
+```ts
+export const appRouter = t.router({
+  health: t.procedure.query(() => 'ok'),
+  post: postRouter, // itself a t.router({ … })
+  admin: lazy(() => import('./admin')),
+  billing: t.router(billingRoutes, { prefix: '/billing', tags: ['billing'] }),
+}); // validated and flattened here
+export type AppRouter = typeof appRouter;
+```
+
 - ✅ Familiar. Errors surface early.
 - ❌ More ceremony. It keeps the router as an opaque built object, and lazy plus prefix logic stays in the builder.
 
 ## Details
 
 - **Merging:** use object spread (`{ ...a, ...b }`). Duplicate keys are a type error through a `Router` constraint helper and are checked at runtime.
+
+  ```ts
+  // v11: t.mergeRouters(postRouter, userRouter)
+  export const appRouter = { ...postRouter, ...userRouter };
+  // a key present in both: type error, and createHandler() throws
+  ```
+
 - **Lazy:**
   - `lazy(() => import('./admin'))` accepts default or named exports.
   - For OpenAPI routing without loading every lazy subtree, a lazy router may declare a `prefix` (as oRPC requires), or the handler may be given a minified contract (09).
+
+  ```ts
+  export const appRouter = {
+    admin: lazy(() => import('./admin')), // default export, or a single named export
+    reports: lazy(() => import('./reports').then((m) => m.reportsRouter)),
+    // OpenAPI, prefix: requests outside /billing never load the subtree
+    billing: lazy(() => import('./billing'), { prefix: '/billing' }), // option shape TBD
+  };
+
+  // OpenAPI, contract: routes come from a minified contract (09), subtrees load on demand
+  createOpenAPIHandler({ router: appRouter, contract: appContract }); // option name TBD
+  ```
+
+  oRPC's form of the prefixed lazy router is `os.prefix('/billing').lazy(() => import('./billing'))`.
+
 - **Router options:** `{ prefix?: string; tags?: string[] }` only. Middleware is not a router option (06 (e)).
 - **Reserved keys:** keep the v11 runtime check. Also reserve keys starting with `~` (our def namespace).
 - **Inference helpers:** `inferRouterInputs`, `inferRouterOutputs` and `inferRouterErrors` (07), plus `inferContract<typeof router>` (01, 09).
+
+> **Spike (2026-10-09):** [`notes/contracts-and-routers-typing.md`](../notes/contracts-and-routers-typing.md).
+>
+> - Object spread can't detect duplicate keys, at the type level or at runtime. `{ ...a, ...b }` silently keeps `b`'s value, and the duplicate is gone before `createHandler()` sees it. The "Merging" bullet above therefore needs a variadic merge helper (prototyped) or has to accept silent overwrites.
+> - `lazy()` with default or named exports, and the client unwrapping it, both type fine.
 
 ## Recommendation
 

@@ -43,15 +43,89 @@
 ## Options
 
 - **ST-A — JSDoc tags only** (Effect). Stable names; stability is visible in hovers and in generated docs.
+
+  ```ts
+  // ST-A: stable name and entry point; the tier is only in the JSDoc
+  /**
+   * In-process link with serialization, for tests and SSR.
+   *
+   * @since 12.0.0
+   * @stability experimental
+   */
+  export function localLink(opts: LocalLinkOptions): TRPCLink { … }
+
+  import { localLink } from 'trpcdev/client';
+  ```
+
 - **ST-B — Name prefixes** (v11).
+
+  ```ts
+  // ST-B: the tier is in the name, so stabilising it is a rename (`@since` value pending Q21.2)
+  /**
+   * In-process link with serialization, for tests and SSR.
+   *
+   * @since 12.0.0
+   */
+  export function unstable_localLink(opts: LocalLinkOptions): TRPCLink { … }
+
+  import { unstable_localLink } from 'trpcdev/client';
+  ```
+
 - **ST-C — Entry-point tiers.** Experimental APIs only live under `…/experimental` (for example `trpcdev/server/experimental`), so the import path shows the tier.
+
+  ```ts
+  // ST-C: src/client/experimental.ts, the only place localLink is exported from
+  /**
+   * In-process link with serialization, for tests and SSR.
+   *
+   * @since 12.0.0
+   */
+  export function localLink(opts: LocalLinkOptions): TRPCLink { … }
+
+  import { localLink } from 'trpcdev/client/experimental';
+  ```
+
 - **ST-A + ST-C:** both. The entry point gives a coarse signal, the JSDoc gives precision.
+
+  ```ts
+  // ST-A + ST-C: same entry point as ST-C, plus the tag
+  /**
+   * In-process link with serialization, for tests and SSR.
+   *
+   * @example
+   * createTRPCClient<AppRouter>({ links: [localLink({ router: appRouter, createContext })] })
+   *
+   * @since 12.0.0
+   * @stability experimental
+   */
+  export function localLink(opts: LocalLinkOptions): TRPCLink { … }
+  ```
 
 ## Proposed rules
 
 1. Every export from a public entry point has JSDoc with a summary, at least one `@example` for functions, `@since` and `@stability` (`stable` | `unstable` | `experimental`).
 2. **No `unstable_` / `experimental_` name prefixes.** Experimental APIs live in `/experimental` entry points. Graduating an API moves its export, while the old path keeps re-exporting it with `@deprecated` for one minor version.
+
+   ```ts
+   // trpcdev/client/experimental, for one minor after localLink graduates to trpcdev/client
+   /** @deprecated Import `localLink` from `trpcdev/client`. */
+   export { localLink } from './links/localLink.ts';
+   ```
+
 3. `./internal` is the glue for first-party packages. It has no semver guarantees, its JSDoc header says so, and every export is tagged `@internal` (not stripped, because types must stay nameable; see 01).
+
+   ```ts
+   // src/internal/index.ts
+   /**
+    * Internal glue (`trpcdev/internal`) for first-party `@trpcdev/*` packages. No semver guarantees.
+    *
+    * @internal
+    */
+
+   /** @internal */
+   export type { AnyProcedure } from '../server/procedure.ts';
+   ```
+
 4. Deprecations carry `@deprecated <replacement>` and are removed in the next major. **vNext starts with zero deprecated aliases.**
 5. A CI script (TypeScript compiler API, no extra dependencies) fails if a public export is missing JSDoc or the required tags, or if a stable entry point re-exports something tagged experimental.
 6. API reference Markdown can be generated from the JSDoc into `docs/reference/` (**open**).

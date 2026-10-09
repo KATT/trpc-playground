@@ -51,6 +51,15 @@ t.procedure; // ProcedureBuilder<TContext, TMeta, TContextOverrides, TInputIn, T
   ```
 
 - **I-B — Keep chained builders:** `initTRPC.context<Context>().meta<Meta>().create()`.
+
+  ```ts
+  const t = initTRPC
+    .context<Context>()
+    .meta<Meta>()
+    .services<Db | Mailer>() // name TBD
+    .create();
+  ```
+
 - **I-C — oRPC style, no `t`:**
 
   ```ts
@@ -59,6 +68,23 @@ t.procedure; // ProcedureBuilder<TContext, TMeta, TContextOverrides, TInputIn, T
   ```
 
 `create()` keeps only definition-time options, such as `defaultMeta` (or that moves to `.meta()` on a base procedure).
+
+```ts
+// v11
+const t = initTRPC
+  .context<Context>()
+  .create({ transformer: superjson, errorFormatter, isServer: true });
+
+// vNext: definition-time only; transport options move to the handler
+const t = initTRPC.create<{ ctx: Context; meta: Meta }>();
+export const publicProcedure = t.procedure.meta({ auth: false }); // replaces defaultMeta (04 (f))
+createHandler({
+  router: appRouter,
+  createContext,
+  serializer: rich(),
+  onError,
+}); // 11, 12
+```
 
 Moving transport options out of `create()`:
 
@@ -97,6 +123,37 @@ Moving transport options out of `create()`:
 
 - **G-B — Positional generics.** Status quo.
 
+  ```ts
+  declare class ProcedureBuilder<
+    TCtx,
+    TCtxOverrides,
+    TMeta,
+    TServices,
+    TInputIn,
+    TInputOut,
+    TOutputIn,
+    TOutputOut,
+    TErrors,
+    TRoute,
+  > {
+    input<$In, $Out>(
+      schema: StandardSchemaV1<$In, $Out>,
+    ): ProcedureBuilder<
+      TCtx,
+      TCtxOverrides,
+      TMeta,
+      TServices,
+      $In,
+      $Out,
+      TOutputIn,
+      TOutputOut,
+      TErrors,
+      TRoute
+    >;
+    // every method repeats the full list; adding state adds a parameter to each
+  }
+  ```
+
 > **Spike (2026-10-09):** [`notes/builder-generics-typeperf.md`](../notes/builder-generics-typeperf.md). On 1k procedures, bags cost +15–25% check time and scale linearly. A flat mapped patch keeps hovers flat; `Omit & Patch` nests one layer per call.
 
 ### (c) The "generic builder" from `ideas.md`
@@ -105,14 +162,52 @@ Moving transport options out of `create()`:
 
 - **E-A — Public extension API.** Third parties can add terminals or builder methods, via a module registry ([#6027](https://github.com/trpc/trpc/pull/6027)) or a class `extend()`.
   - ❌ This is where #6027 died: type complexity, and global augmentation leaking between packages.
+
+  ```ts
+  // E-A, library author: register a terminal (augmentation form; #6027 also tried a module registry)
+  declare module 'trpcdev/server' {
+    interface BuilderModules<TDef extends BuilderDef> {
+      action: (resolver: Resolver<TDef>) => ActionProcedure<TDef>; // names TBD
+    }
+  }
+
+  // E-A, user: the new terminal appears on every builder
+  export const createPost = t.procedure
+    .input(NewPost)
+    .action(async ({ input }) => db.post.create(input));
+  ```
+
 - **E-B — Internal generic core, closed public builder.**
   - Internally, a flavour-agnostic `ProcedureBuilder` (state + middleware + validation) plus a small set of _terminals_ (`query`, `mutation`, `subscription`, `handler`).
   - Variants are _wrappers_ around a finished procedure: `callable(proc)`, `action(proc)` and `t.contract`. They are not builder methods.
   - ✅ No type-level plugin system. RSC and caller variants are opt-in imports, and tree-shakeable.
   - ❌ Third parties cannot add builder methods. They can still write wrappers and middleware.
+
+  ```ts
+  // E-B: the builder only has the built-in terminals; variants wrap a finished procedure (15)
+  const createPostProcedure = t.procedure
+    .input(NewPost)
+    .mutation(async ({ input }) => db.post.create(input));
+
+  export const createPost = action(createPostProcedure, { ctx: createContext });
+  export const getPost = callable(byId, { ctx: createContext });
+  ```
+
 - **E-C — Standalone middleware/builder package** (`@trpcdev/procedure`?) that tRPC itself builds on. This goes against `ideas.md`'s single `trpcdev` package, unless it is only a subpath (`trpcdev/procedure`).
   - Reuse outside tRPC.
   - ❌ Another package to version; benefit unclear without concrete consumers.
+
+  ```ts
+  // E-C: a non-RPC library (for example RSC-only) builds on the core directly
+  import { createBuilder } from 'trpcdev/procedure'; // or @trpcdev/procedure; name TBD
+
+  const base = createBuilder<{ ctx: { user: User } }>().use(authed);
+  export const createPost = base
+    .input(NewPost)
+    .handler(async ({ ctx, input }) => db.post.create(ctx.user, input));
+
+  // trpcdev/server's t.procedure is the same core plus query/mutation/subscription terminals
+  ```
 
 ### (d) Data model: contract versus implementation
 
@@ -140,11 +235,32 @@ interface Procedure extends ProcedureContract {
 - The `'~trpc'` key replaces `_def` and follows the Standard Schema `~standard` convention: hidden from autocomplete and namespaced.
 - A procedure _is_ a contract plus an implementation. `t.contract…` builds just the contract (09), and `implement(contract)` attaches the implementation.
 
+```ts
+appRouter.post.byId['~trpc'].kind; // 'query' (v11: appRouter._def.procedures['post.byId']._def.type)
+appRouter.post.byId['~trpc'].route; // { method: 'GET', path: '/posts/{id}' }, read by the OpenAPI generator (18)
+```
+
 ### (e) Base procedure ergonomics
 
 - Keep `t.procedure` as the base. `t.router` stays optional (08).
 - `t.middleware(fn)` stays for reusable middleware.
 - `publicProcedure`/`protectedProcedure` remain a user convention; docs show them.
+
+```ts
+const t = initTRPC.create<{ ctx: Context; meta: Meta }>();
+
+const isAuthed = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) return error({ code: 'UNAUTHORIZED' }); // 07
+  return next({ ctx: { user: ctx.user } });
+});
+
+export const publicProcedure = t.procedure;
+export const protectedProcedure = t.procedure.use(isAuthed);
+
+export const appRouter = {
+  me: protectedProcedure.query(({ ctx }) => ctx.user), // plain object, no t.router() needed (08)
+};
+```
 
 ## Recommendation
 

@@ -58,9 +58,73 @@ trpc.post.byId.queryOptions({ input: skipToken });
 ```
 
 - **React helpers** (`@trpcdev/tanstack-query/react`): `createTRPCContext()` → `{ TRPCProvider, useTRPC }`, for people who want React context instead of module singletons.
+
+  ```tsx
+  import { createTRPCContext } from '@trpcdev/tanstack-query/react';
+
+  export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>();
+
+  function App({ children }: { children: React.ReactNode }) {
+    return (
+      <TRPCProvider trpcClient={client} queryClient={queryClient}>
+        {children}
+      </TRPCProvider>
+    ); // v11 prop names
+  }
+
+  function Post({ id }: { id: string }) {
+    const trpc = useTRPC();
+    const post = useQuery(trpc.post.byId.queryOptions({ input: { id } }));
+    return <h1>{post.data?.title}</h1>;
+  }
+  ```
+
 - **Server prefetching:** `createTRPCQueryUtils({ client: createRouterClient(appRouter, { ctx }) })`. The utils accept any client shape that implements the untyped client interface.
+
+  ```ts
+  const trpc = createTRPCQueryUtils({
+    client: createRouterClient(appRouter, { ctx }),
+  });
+  await queryClient.prefetchQuery(
+    trpc.post.byId.queryOptions({ input: { id } }),
+  );
+  ```
+
 - **Hydration:** `hydrationSerializer` from the core serializer, for `QueryClient({ defaultOptions: { dehydrate: { serializeData }, hydrate: { deserializeData } } })`.
 - **Keys:** keep v11's `[path, { input, type }]` key format where possible, so existing knowledge transfers.
+
+The alternatives in the questions below look like this.
+
+```ts
+// Q19.1 per-framework packages (oRPC's former layout)
+import { createTRPCReactQueryUtils } from '@trpcdev/react-query'; // name TBD
+import { createTRPCVueQueryUtils } from '@trpcdev/vue-query'; // name TBD
+
+export const trpc = createTRPCVueQueryUtils({ client }); // one package and factory per adapter
+```
+
+```ts
+// Q19.2 positional (v11): input first, TanStack options second
+useQuery(trpc.post.byId.queryOptions({ id }, { staleTime: 1000 }));
+useQuery(trpc.post.byId.queryOptions(skipToken));
+trpc.post.byId.queryKey({ id });
+```
+
+```ts
+// Q19.3 cursor convention (v11): the page param is injected into `input.cursor`
+// (procedure input: z.object({ limit: z.number(), cursor: z.string().optional() }))
+useInfiniteQuery(
+  trpc.post.list.infiniteOptions({
+    input: { limit: 20 },
+    getNextPageParam: (last) => last.nextCursor,
+  }),
+);
+```
+
+> **Spike (2026-10-09):** [`notes/tanstack-options-typing.md`](../notes/tanstack-options-typing.md).
+>
+> - Against `@tanstack/query-core` 5.90 types, the option bag types identically to v11's positional form. That covers `select` inference, `skipToken`, `DataTag` keys for `getQueryData`, and excess-property errors on misspelled options.
+> - Explicit infinite `input: (pageParam) => …` has TanStack's usual pitfall: with `initialPageParam: undefined` and no annotation, the page param infers as `undefined`. v11's `cursor` convention avoids that.
 
 ## Recommendation
 

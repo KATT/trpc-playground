@@ -77,6 +77,22 @@ const byId = authed
 
 `.errors((opts) => shape | undefined)` claims thrown errors and maps them to typed shapes.
 
+```ts
+const rateLimited = t.procedure.errors((opts) => {
+  if (opts.error.cause instanceof RateLimitError) {
+    return {
+      ...opts.shape,
+      data: {
+        ...opts.shape.data,
+        kind: 'RATE_LIMIT' as const,
+        retryAfterMs: opts.error.cause.retryAfterMs,
+      },
+    };
+  }
+  return undefined; // declined: falls through to the global errorFormatter
+});
+```
+
 - ✅ Already shipped and familiar. Works with thrown domain errors.
 - ❌ "Formatter" is a separate concept from middleware. It is shape-centric (`opts.shape`) rather than error-centric, and its types are tied to a global formatter.
 
@@ -113,6 +129,23 @@ class TRPCError<TCode extends string = string, TData = unknown> extends Error {
 
 **2. Inference (B).** An error _returned_ from middleware or a resolver, or failed through an Effect, is added to the procedure's error union. Returned errors short-circuit the chain.
 
+```ts
+const byId = t.procedure.input(Schema.Struct({ id: Schema.String })).query(
+  Effect.fn('post.byId')(function* ({ input }) {
+    const repo = yield* PostRepo;
+    const post = yield* repo
+      .find(input.id)
+      .pipe(
+        Effect.catchTag('PostNotFound', () =>
+          error({ code: 'NOT_FOUND', data: { id: input.id } }),
+        ),
+      );
+    if (!post.published) return yield* error({ code: 'FORBIDDEN' });
+    return post; // errors = NOT_FOUND<{ id: string }> | FORBIDDEN | BAD_REQUEST (input)
+  }),
+);
+```
+
 **3. Declaration (A, optional).**
 
 - `.errors({ CODE: { status?, message?, data?: schema } })` adds to the union, provides typed `errors.CODE()` constructors (throwable, so they are typed even from deep code), validates `data` at runtime, and documents the errors for OpenAPI.
@@ -146,10 +179,26 @@ const withDomainErrors = t.procedure.use(
 - `BAD_REQUEST` with `data.issues` for input validation (05), automatically present on procedures with an input.
 - `INTERNAL_SERVER_ERROR` (`defined: false`) for everything unexpected.
 
+```ts
+const [post, err] = await safe(client.post.create.mutate({ title: '' }));
+if (err?.defined && err.code === 'BAD_REQUEST') {
+  err.data.issues; // input validation issues (05), typed because `.input()` is set
+}
+```
+
 **6. Unexpected errors.**
 
 - Anything thrown that is not declared becomes `{ code: 'INTERNAL_SERVER_ERROR', defined: false }`.
 - In production the message is **masked**. It is logged through `onError`. `cause` is never serialized.
+
+```ts
+const byId = t.procedure.query(async () => {
+  throw new Error('connect ECONNREFUSED 10.0.0.7:5432');
+});
+
+createHandler({ router, onError: ({ error, path }) => log(error) }); // sees the original error and cause
+// client, production: { code: 'INTERNAL_SERVER_ERROR', defined: false, message: <masked> }
+```
 
 **7. Client:**
 
@@ -175,11 +224,58 @@ if (err) {
 - `inferProcedureErrors<typeof proc>` / `inferRouterErrors<AppRouter>` are the type helpers.
 - TanStack Query's `error` is typed with the union (19).
 
+The `safe()` shapes in Q7.3:
+
+```ts
+const [post, err] = await safe(client.post.byId.query({ id })); // [data, error] (v11)
+const [err, post, isDefined] = await safe(client.post.byId.query({ id })); // [error, data, isDefined] (oRPC)
+const { data: post, error: err } = await safe(client.post.byId.query({ id })); // { data, error }
+```
+
+The class choice in Q7.7:
+
+```ts
+// one class: the same TRPCError on server and client
+import { TRPCError } from 'trpcdev/client';
+if (err instanceof TRPCError && err.defined) err.code;
+
+// two classes (v11): the client wraps server errors
+import { TRPCClientError } from 'trpcdev/client';
+if (err instanceof TRPCClientError) err.data;
+```
+
 **8. No global `errorFormatter`.**
 
 - Logging moves to the handler's `onError`.
 - Shape changes become mapping middleware on base procedures.
 - Error data serialization uses the endpoint's serializer (11).
+
+```ts
+// v11: one global shape for every procedure
+const t = initTRPC.create({
+  errorFormatter: ({ shape, error }) => ({
+    ...shape,
+    data: {
+      ...shape.data,
+      retryAfterMs:
+        error.cause instanceof RateLimitError ? error.cause.retryAfterMs : null,
+    },
+  }),
+});
+
+// vNext: logging in onError, the shape change as mapping middleware on a base procedure
+createHandler({ router, onError: ({ error, path }) => log(error) });
+const base = t.procedure.use(
+  mapErrors((cause) =>
+    cause instanceof RateLimitError
+      ? error({
+          code: 'TOO_MANY_REQUESTS',
+          data: { retryAfterMs: cause.retryAfterMs },
+        })
+      : undefined,
+  ),
+);
+```
 
 > **Spike (2026-10-09):** [`notes/returned-error-inference.md`](../notes/returned-error-inference.md). Type-level prototype of the combined model. The following all infer correctly: returned errors (middleware and resolvers), declared maps, `mapErrors`, `return yield* error()`, and client narrowing for all three `safe()` shapes. A yieldable `TRPCError` is itself an `Effect`, so "returned" and "failed" are one rule. Pitfalls: `any`/`unknown`/`{}` outputs swallow returned errors through subtype reduction, and narrowing by `code` without `defined` mixes in the unexpected branch. Typeperf on 1k procedures: split ctx/error inference costs +0.4% instantiations, whole-return inference +33%. The 02 (d.ii) check costs 7–9%.
 

@@ -7,5 +7,6 @@ Source for this project's key dependencies is vendored under `.repos/`, pinned t
 ### Vendored packages
 
 - `effect` (ref `effect@4.0.2`) → `.repos/effect`
+- `orpc` (ref `v1.15.5`) → `.repos/orpc`
 
 <!-- vendor-src:end -->

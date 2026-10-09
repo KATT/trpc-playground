@@ -1,0 +1,87 @@
+# v11 inventory: keep, change or delete
+
+**Purpose:** a single table of what v11 ships, with a suggested fate for vNext, so features can be deleted deliberately rather than by accident. Per `ideas.md`, we start from scratch and are allowed to be brutal. Anything not listed as **keep** or **change** is gone unless a decision brings it back.
+
+Source: v11 `main` (packages at `11.21.0`). Paths are relative to the repo root.
+
+Fates: **keep** (same idea, maybe renamed) · **change** (concept stays, API changes) · **replace** (different mechanism) · **delete**.
+
+## Server (`packages/server`)
+
+| v11 API                                                                                                              | Where                                                                   | Fate    | Proposal   | Notes                                                             |
+| -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------- | ---------- | ----------------------------------------------------------------- |
+| `initTRPC.context<>().meta<>().create(opts)`                                                                         | `unstable-core-do-not-import/initTRPC.ts`                               | change  | 03         | `create()` loses almost all options once they move to endpoints   |
+| `create({ transformer })`                                                                                            | `rootConfig.ts`                                                         | replace | 11         | danSON-based serializer on handlers and links                     |
+| `create({ errorFormatter })`                                                                                         | `rootConfig.ts`                                                         | replace | 07         | Errors model + endpoint-level hook                                |
+| `create({ isServer, allowOutsideOfServer })`                                                                         | `rootConfig.ts`                                                         | delete  | 03         |                                                                   |
+| `create({ isDev })`                                                                                                  | `rootConfig.ts`                                                         | change  | 12         | Handler option                                                    |
+| `create({ defaultMeta })`                                                                                            | `rootConfig.ts`                                                         | replace | 04         | `.meta()` on the base procedure                                   |
+| `create({ sse, jsonl })`                                                                                             | `rootConfig.ts`                                                         | change  | 12, 14     | Handler options                                                   |
+| Procedure builder: `.input .output .meta .use .concat .query .mutation .subscription`                                | `procedureBuilder.ts`                                                   | keep    | 04–06      | "Basic procedure builder API stays the same"                      |
+| `.errors(formatter)` (per-procedure error formatters)                                                                | `procedureBuilder.ts` ([#7591](https://github.com/trpc/trpc/pull/7591)) | change  | 07         | Replaced or subsumed by the vNext errors model                    |
+| `.unstable_concat`, `experimental_standaloneMiddleware`, `experimental_trpcMiddleware`, `experimental_lazy`, `sse()` | various                                                                 | delete  | —          | Deprecated aliases                                                |
+| `.experimental_caller()`                                                                                             | `procedureBuilder.ts`                                                   | replace | 15         | `callable()` / `action()` wrappers                                |
+| `t.middleware`, `.unstable_pipe`                                                                                     | `middleware.ts`                                                         | keep    | 06         | Stable `pipe`                                                     |
+| `t.router`                                                                                                           | `router.ts`                                                             | keep    | 08         | Optional; plain objects allowed at the root                       |
+| `t.mergeRouters`                                                                                                     | `router.ts`                                                             | delete  | 08         | Object spread                                                     |
+| `lazy()`                                                                                                             | `router.ts`                                                             | keep    | 08         |                                                                   |
+| `t.createCallerFactory`, `router.createCaller`                                                                       | `router.ts`                                                             | replace | 15         | `createRouterClient()`                                            |
+| `callTRPCProcedure`                                                                                                  | `router.ts`                                                             | replace | 15         | `call()`                                                          |
+| `TRPCError` + 21 error codes + HTTP status map                                                                       | `error/TRPCError.ts`, `rpc/codes.ts`                                    | change  | 07         | Typed `code`/`data`, custom codes                                 |
+| `getErrorShape`, `getHTTPStatusCode*`                                                                                | `error/`, `http/`                                                       | delete  | 07         | Internal                                                          |
+| Parsers: Zod `.parse`, Valibot, ArkType, Yup, Superstruct, myzod, Scale, plain functions                             | `parser.ts`                                                             | delete  | 05         | Standard Schema + Effect Schema only                              |
+| Standard Schema support                                                                                              | `parser.ts`, `vendor/standard-schema-v1`                                | keep    | 05         |                                                                   |
+| Input chaining (object merge)                                                                                        | `middleware.ts`                                                         | keep?   | 05         | Open question                                                     |
+| `tracked()`                                                                                                          | `stream/tracked.ts`                                                     | keep    | 14         |                                                                   |
+| Observable-returning subscriptions                                                                                   | `procedure.ts`                                                          | delete  | 14         | Async iterables / Effect `Stream` only                            |
+| `@trpc/server/observable`                                                                                            | `observable/`                                                           | delete  | 17         | Links move to Effect                                              |
+| `octetInputParser`, `FormData` inputs                                                                                | `http/contentTypeParsers.ts`                                            | replace | 11         | `File`/`Blob` anywhere + binary inputs                            |
+| `responseMeta`                                                                                                       | `http/resolveResponse.ts`                                               | replace | 04, 13     | Response headers/status API + plugins                             |
+| `allowBatching`, `maxBatchSize`, `allowMethodOverride`, `maxBodySize`                                                | `http/`, `adapters/node-http`                                           | change  | 10, 13     | Handler options and plugins with secure defaults                  |
+| JSONL streaming (`httpBatchStreamLink` server side)                                                                  | `stream/jsonl.ts`                                                       | replace | 10, 11, 14 | danSON's async format covers it, including nested deferred values |
+| SSE subscriptions                                                                                                    | `stream/sse.ts`                                                         | keep    | 14         |                                                                   |
+| WebSocket JSON-RPC protocol, `experimental_encoder`                                                                  | `adapters/ws.ts`, `rpc/`                                                | replace | 10, 11     | New message model; encoder becomes the serializer                 |
+| Adapters: standalone, node-http, express, fastify, fetch, aws-lambda, next, next-app-dir, ws                         | `adapters/*`                                                            | change  | 12         | One handler + thin adapters                                       |
+| Subpaths `/unstable-core-do-not-import`, `/shared`, `/rpc`                                                           | `package.json`                                                          | delete  | 01, 21     | Replaced by explicit stability tiers                              |
+
+## Client (`packages/client`)
+
+| v11 API                                                               | Where                            | Fate    | Proposal | Notes                                  |
+| --------------------------------------------------------------------- | -------------------------------- | ------- | -------- | -------------------------------------- |
+| `createTRPCClient<AppRouter>({ links })`                              | `createTRPCClient.ts`            | keep    | 16       |                                        |
+| `createTRPCProxyClient`, `inferRouterProxyClient`, `CreateTRPCClient` | `createTRPCClient.ts`            | delete  | —        | Deprecated aliases                     |
+| `createTRPCUntypedClient`, `getUntypedClient`                         | `internals/TRPCUntypedClient.ts` | change  | 16       | Internal/advanced                      |
+| `.query(input, { signal, context })`, `.mutate(…)`                    | `createTRPCClient.ts`            | keep    | 16       | Typed context and link-defined options |
+| `.subscribe(input, { onData, onError, … })`                           | `createTRPCClient.ts`            | change  | 14, 16   | Async iterable first                   |
+| `TRPCClientError`                                                     | `TRPCClientError.ts`             | change  | 07, 16   |                                        |
+| `safe()`                                                              | `safe.ts`                        | keep    | 07       | Result shape is an open question       |
+| `httpLink`, `httpBatchLink`, `httpBatchStreamLink`                    | `links/`                         | change  | 17       | One configurable HTTP link?            |
+| `httpSubscriptionLink` (EventSource)                                  | `links/httpSubscriptionLink.ts`  | change  | 14, 17   | Fetch-streamed SSE, no `EventSource`   |
+| `wsLink`, `createWSClient`                                            | `links/wsLink/`                  | keep    | 17       |                                        |
+| `splitLink`, `loggerLink`, `retryLink`                                | `links/`                         | keep    | 17       |                                        |
+| `unstable_localLink`                                                  | `links/localLink.ts`             | keep    | 15, 17   | Stable `localLink`                     |
+| `dedupeLink` (internal)                                               | `links/internals/dedupeLink.ts`  | change? | 17       |                                        |
+| Per-link `transformer` option                                         | `internals/transformer.ts`       | replace | 11       | `serializer`                           |
+| `inferRouterInputs/Outputs` (in server)                               | `clientish/inference.ts`         | keep    | 08, 16   | Plus errors                            |
+
+## Integrations and tooling
+
+| v11 package / API                                                                  | Fate    | Proposal | Notes                                                        |
+| ---------------------------------------------------------------------------------- | ------- | -------- | ------------------------------------------------------------ |
+| `@trpc/server` + `@trpc/client`                                                    | replace | 01       | Merged into the single `trpcdev` package (`ideas.md`)        |
+| `@trpc/react-query` (classic hooks, `createTRPCReact`, SSR helpers, RSC)           | delete  | —        | "`@trpc/react-query` is dead"                                |
+| `@trpc/tanstack-react-query` (`createTRPCContext`, `createTRPCOptionsProxy`)       | change  | 19       | Becomes framework-agnostic `@trpcdev/tanstack-query`         |
+| `@trpc/next` Pages Router (`withTRPC`, `createTRPCNext`, `ssrPrepass`)             | delete  | —        |                                                              |
+| `@trpc/next` app-dir experiments (server actions, `nextCacheLink`, `nextHttpLink`) | replace | 15, 20   |                                                              |
+| `@trpc/openapi` (static TS-based spec generation, Hey API helpers)                 | change  | 18       | Runtime handler + spec; static generator is an open question |
+| `@trpc/upgrade` (codemods)                                                         | delete  | —        | Maybe a v11 → vNext codemod later                            |
+| `www/` (Docusaurus site)                                                           | delete  | 22       | Markdown docs only                                           |
+| `examples/` (≈35 examples)                                                         | replace | 22       | Small set, workspace-linked                                  |
+| lerna, turbo, eslint, prettier, manypkg, konn, ts-prune, tsx                       | delete  | 22       | Only Vite-family tools, TypeScript, pnpm and Effect          |
+| `.github/` workflows                                                               | replace | 22       | Minimal CI                                                   |
+
+## Worth carrying over as knowledge, not code
+
+- **Security fixes in flight** (local worktrees `security/*`): default `maxBatchSize`, a default Node body limit, `FormData` null-prototype objects, SSE `tracked()` id injection, WebSocket origin validation, WebSocket request-id validation, JSONL orphaned rejections, Next cache-tag collisions. vNext must have safe defaults for all of these from day one (10, 11, 13).
+- **Test suites** in `packages/tests/server/*.test.ts` and `packages/client/src/__tests__` are a good source of behaviour cases (batching, streaming, abort, reconnection) for the new integration tests.
+- **Failure-mode inventory** in `_artifacts/skill_spec.md`: common user mistakes that vNext APIs should make impossible or obvious.

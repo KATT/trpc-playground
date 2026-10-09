@@ -15,11 +15,13 @@
     "@trpc/client": "11.19.0",
     "@trpc/server": "11.19.0",
     "@types/node": "^24.0.0",
+    "arktype": "2.2.8",
     "danson": "0.13.1",
     "effect": "4.0.2",
     "rolldown": "1.2.13",
     "superjson": "2.2.6",
     "typescript": "^7.0.2",
-    "vite-plus": "1.1.0"
+    "vite-plus": "1.1.0",
+    "zod": "4.6.5"
   }
 }

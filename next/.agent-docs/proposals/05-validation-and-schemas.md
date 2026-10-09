@@ -11,8 +11,9 @@ Decide which validators vNext accepts, how input and output types are derived, a
 **Recommendation:**
 
 - Accept **Standard Schema only**, plus Effect Schema natively, and drop every legacy parser.
-- Add a `type<T>()` helper for unvalidated types.
+- No unvalidated inputs: no `type<T>()` and no plain-function parsers (decided, [0012](../decisions/0012-no-unvalidated-type-helper.md)).
 - Keep input chaining.
+- Ctx-aware validation through an `.input(({ ctx }) => schema)` callback, and through Effect Schema services for Effect users.
 - Use Standard JSON Schema for OpenAPI.
 
 ## Today (v11)
@@ -83,6 +84,8 @@ t.procedure.input(type<{ id: string }>()).query(…); // no runtime validation
 
 `type<T>()` returns a Standard Schema that passes the value through. This replaces v11's "plain function" parsers for the "trust me" case. It is useful with contracts and for internal procedures.
 
+- **Decided ([0012](../decisions/0012-no-unvalidated-type-helper.md)):** no `type<T>()` and no plain-function parsers. A function passed to `.input()` is reserved for the ctx callback in (d).
+
 ### (c) Input chaining
 
 - **C-A — Keep chaining.** Objects are merged; non-objects error at the type level. Base procedures can then require an `{ orgId }` input that middleware reads (`opts.input` in middleware is typed by the inputs declared so far).
@@ -119,16 +122,74 @@ t.procedure.input(type<{ id: string }>()).query(…); // no runtime validation
 
 ### (d) Input as a function of `ctx`
 
-[#6423](https://github.com/trpc/trpc/pull/6423) explored `.input(({ ctx }) => schema)`. This is rarely needed and complicates contracts and OpenAPI. **Recommend no.**
+[#6423](https://github.com/trpc/trpc/pull/6423) explored `.input(({ ctx }) => schema)`. Alex wants validators to be able to use `ctx` ([0012](../decisions/0012-no-unvalidated-type-helper.md)). Each option sees the `ctx` at its position in the chain: middleware before `.input()` is visible, middleware after it is not.
 
-```ts
-// as explored in #6423 (not recommended)
-t.procedure
-  .input(({ ctx }) =>
-    z.object({ limit: z.number().max(ctx.user.isPro ? 1000 : 100) }),
-  )
-  .query(({ input }) => db.post.list(input.limit)); // no static schema for contracts or OpenAPI
-```
+- **D-A — Callback.** The callback returns a Standard Schema or an Effect Schema.
+  - ✅ Works with every library, and `ctx` is typed.
+  - ❌ Per-call schema construction is expensive. A rebuilt Zod object costs ~37 µs, about 8× the rest of the call. Schemas picked from a prebuilt set cost nothing.
+  - ❌ There's no static schema for OpenAPI (18), contracts (09) or client validation.
+  - ❌ The input type is only correct when the shape doesn't vary with ctx: two different `ZodObject`s subtype-reduce, and keys are silently dropped.
+  - ❌ It needs two `.input()` overloads, so one form's type errors degrade.
+
+  ```ts
+  // D-A
+  authed
+    .input(({ ctx }) =>
+      z.object({ limit: z.number().max(ctx.user.isPro ? 1000 : 100) }),
+    )
+    .query(({ input }) => db.post.list(input.limit));
+
+  const byPlan = {
+    pro: z.object({ limit: z.number().max(1000) }),
+    free: z.object({ limit: z.number().max(100) }),
+  };
+  authed.input(({ ctx }) => byPlan[ctx.user.plan]); // fast: nothing built per call
+  ```
+
+- **D-B — AsyncLocalStorage accessor.** tRPC runs each `validate()` inside a store, and refinements read `ctx` from it. There is no other channel into a Standard Schema validator: Zod ignores `libraryOptions`.
+  - ✅ The schema stays static and the cost is negligible.
+  - ❌ Nothing type-checks that the schema is used where the ctx it reads exists.
+  - ❌ The same schema throws outside tRPC (client forms, tests).
+  - ❌ It needs `AsyncLocalStorage`, which is not in the WinterTC minimum common API.
+
+  ```ts
+  // D-B
+  const Limit = z.object({
+    limit: z
+      .number()
+      .refine((n) => n <= (authed.inputContext().ctx.user.isPro ? 1000 : 100)),
+  });
+  authed.input(Limit);
+  Limit.parse({ limit: 1 }); // throws: called outside tRPC input validation
+  ```
+
+- **D-C — Effect Schema services.** Effect Schema checks can require services. `.input()` checks them against the services provided earlier (06 (g)).
+  - ✅ Typed end to end, and the schema stays static.
+  - ❌ Effect only. It requires V-A, because `toStandardSchemaV1` rejects schemas that need services, and service-providing middleware in v1 (Q6.6).
+
+  ```ts
+  // D-C
+  const Limit = Schema.Number.pipe(
+    Schema.decode({
+      decode: SchemaGetter.checkEffect((n: number) =>
+        CurrentUser.use((user) =>
+          Effect.succeed(n <= (user.isPro ? 1000 : 100)),
+        ),
+      ),
+      encode: SchemaGetter.passthrough(),
+    }),
+  );
+  authed.input(Schema.Struct({ limit: Limit })); // type error: CurrentUser is not provided
+  authed
+    .provideService(CurrentUser, (ctx) => ctx.user)
+    .input(Schema.Struct({ limit: Limit })); // spike stand-in for 06 (g)
+  ```
+
+- **D-D — None.** Validate the shape statically and check ctx-dependent rules in a middleware after `.input()`. This needs no new API.
+
+> **Spike (2026-10-09):** [`notes/context-aware-inputs.md`](../notes/context-aware-inputs.md) has runtime and type tests for D-A, D-B and D-C, plus a per-call benchmark. Effect 4 keeps AsyncLocalStorage context across fiber hops. Zod's `~standard.validate` runs every refinement twice when any refinement is async: it tries synchronously first, then reruns everything asynchronously. That affects all async Zod refinements, with or without D-B.
+
+> ⚠️ **Parity:** procedures that use D-A have no static input schema. OpenAPI for them must come from `.route({ spec })`, or from a static `.input()` chained before the callback. This doesn't block the "OpenAPI support" row, because the callback is opt-in per procedure.
 
 ### (e) Validation errors
 
@@ -188,10 +249,10 @@ const post = await client.byId.query({ id: '1' }); // post.createdAt typed as Da
 
 ## Recommendation
 
-- **V-A** (Standard Schema + native Effect Schema).
-- `type<T>()`.
+- **V-A** (Standard Schema + native Effect Schema). D-C needs it.
+- No `type<T>()` (decided, [0012](../decisions/0012-no-unvalidated-type-helper.md)).
 - **C-A** (keep chaining).
-- No `ctx`-dependent inputs.
+- **D-A + D-C:** the callback for any library, services for Effect Schema, and one `.input()` check for both. Document that only constraints, not shapes, should depend on `ctx`, and that schemas should be built once. Not D-B: its types are unchecked and shared schemas throw at runtime.
 - `BAD_REQUEST` with `data.issues`, built in and typed.
 - Standard JSON Schema with a converter fallback.
 
@@ -202,12 +263,14 @@ const post = await client.byId.query({ id: '1' }); // post.createdAt typed as Da
 - **Q5.3** Keep input chaining (C-A) or a single `.input()` (C-B)?
 - **Q5.4** Include validation `issues` in production error responses?
 - **Q5.5** Should clients decode outputs with schemas when a runtime contract is available (later, opt-in)?
+- **Q5.6** Ctx-aware validation: which of D-A (callback), D-B (AsyncLocalStorage accessor), D-C (Effect Schema services), or D-D (none, use middleware)?
 
 ## Decision
 
 - **Q5.1:** [ ] V-A · [ ] V-B
-- **Q5.2:** [ ] yes · [ ] no
+- **Q5.2:** [ ] yes · [x] no → [0012](../decisions/0012-no-unvalidated-type-helper.md)
 - **Q5.3:** [ ] C-A · [ ] C-B
 - **Q5.4:** [ ] yes · [ ] no · [ ] configurable, default `____`
 - **Q5.5:** [ ] yes, later · [ ] no
+- **Q5.6:** [ ] D-A · [ ] D-B · [ ] D-C · [ ] D-D (pick any combination)
 - **Notes:**

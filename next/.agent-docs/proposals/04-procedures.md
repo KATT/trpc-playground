@@ -247,5 +247,5 @@ t.procedure
 - **Q4.2:** [ ] R-A · [ ] R-B · [ ] R-C
 - **Q4.3:** [ ] yes · [ ] no · [ ] later
 - **Q4.4:** [ ] yes · [ ] no
-- **Q4.5:** [ ] yes · [ ] no
+- **Q4.5:** [x] yes · [ ] no → [0002](../decisions/0002-meta-in-resolvers.md)
 - **Notes:**

@@ -198,5 +198,5 @@ const client = createTRPCClient<AppRouter>({
 - **Q12.1:** [ ] P-A · [ ] P-B · [ ] P-C
 - **Q12.2:** [ ] create once · [ ] per request
 - **Q12.3:** [ ] Fastify · [ ] Lambda · [ ] CF hibernation · [ ] MessagePort · [ ] Next (dedicated) · other: `____`
-- **Q12.4:** [ ] yes · [ ] no
+- **Q12.4:** [x] yes · [ ] no → [0005](../decisions/0005-websocket-standard-interface.md)
 - **Notes:**

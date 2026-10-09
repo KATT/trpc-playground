@@ -149,7 +149,7 @@ useInfiniteQuery(
 ## Decision
 
 - **Q19.1:** [ ] agnostic + `./react` · [ ] per framework
-- **Q19.2:** [ ] option bag · [ ] positional
+- **Q19.2:** [x] option bag · [ ] positional → [0008](../decisions/0008-tanstack-option-bag.md)
 - **Q19.3:** [ ] explicit input fn · [ ] cursor convention
 - **Q19.4:** name: `__________`
 - **Q19.5:** [ ] yes · [ ] later

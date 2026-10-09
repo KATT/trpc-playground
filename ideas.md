@@ -27,8 +27,9 @@
 - Assume we're starting from scratch and that everything should be deleted
 - Take no shortcuts to getting the best APIs
 - We want to have a design that allows for OpenAPI support like oRPC does (orpc.dev)
-- For now, we can publish everything under the `@trpcdev` scope rather than `@trpc` on npm
-- We push to https://github.com/KATT/trpc-playground rather than trpc
+- For now, we can publish everything under the `@trpcdev` scope rather than `@trpc` on npm (but we don't need to have releases for this anytime soon, just make sure we have examples that work with a linked local package)
+- We push to https://github.com/KATT/trpc-playground rather than trpc. Create new `v12` branch for this for the main there
+- YOLO semantic commits straight to the `v12` branch. No need to create PRs for now
 - We should probably recreate all CI things to be a lot simpler than what is today
 - We should aim for feature parity with https://orpc.dev/docs/comparison. Highlight anything and prompt user when we make API decisions that may stop us from getting there.
 

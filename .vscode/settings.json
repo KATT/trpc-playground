@@ -13,7 +13,14 @@
     "/www/versioned_docs": true,
     "/www/.docusaurus": true,
     "/www/build": true,
-    "**/dist": true
+    "**/dist": true,
+    ".repos": true
+  },
+  "files.watcherExclude": {
+    "**/.repos/**": true
+  },
+  "files.exclude": {
+    "**/.repos": true
   },
   "workbench.colorCustomizations": {
     "titleBar.activeBackground": "#2596be",
@@ -31,6 +38,7 @@
   "typescript.enablePromptUseWorkspaceTsdk": true,
   // "explorer.excludeGitIgnore": true,
   "typescript.preferences.autoImportFileExcludePatterns": [
-    "packages/server/src/unstable-core-do-not-import.ts"
+    "packages/server/src/unstable-core-do-not-import.ts",
+    ".repos/**"
   ]
 }

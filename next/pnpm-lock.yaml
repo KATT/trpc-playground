@@ -199,6 +199,25 @@ importers:
         specifier: 1.1.0
         version: 1.1.0(@types/node@24.19.1)(@vitest/ui@5.0.3)(typescript@7.0.2)
 
+  spikes:
+    dependencies:
+      trpcdev:
+        specifier: workspace:*
+        version: link:../packages/trpcdev
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
+      effect:
+        specifier: 4.0.2
+        version: 4.0.2
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vite-plus:
+        specifier: 1.1.0
+        version: 1.1.0(@types/node@24.19.1)(@vitest/ui@5.0.3)(typescript@7.0.2)
+
   test/portability:
     dependencies:
       trpcdev:
@@ -1523,7 +1542,6 @@ snapshots:
   '@types/node@24.19.1':
     dependencies:
       undici-types: 7.24.6
-    optional: true
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     optional: true
@@ -2004,8 +2022,7 @@ snapshots:
       '@typescript/typescript-win32-arm64': 7.0.2
       '@typescript/typescript-win32-x64': 7.0.2
 
-  undici-types@7.24.6:
-    optional: true
+  undici-types@7.24.6: {}
 
   vite-plus@1.1.0(@types/node@24.19.1)(@vitest/ui@5.0.3)(typescript@7.0.2):
     dependencies:

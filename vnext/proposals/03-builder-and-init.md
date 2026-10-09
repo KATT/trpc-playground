@@ -83,6 +83,8 @@ Moving transport options out of `create()`:
 
 - **G-B — Positional generics.** Status quo.
 
+> **Spike (2026-10-09):** [`notes/builder-generics-typeperf.md`](../notes/builder-generics-typeperf.md). On 1k procedures, bags cost +15–25% check time and scale linearly. A flat mapped patch keeps hovers flat; `Omit & Patch` nests one layer per call.
+
 ### (c) The "generic builder" from `ideas.md`
 
 `ideas.md` says: "a generic builder becomes the basis of tRPC as a standalone package, which also makes RSC callers opt-in."

@@ -1,0 +1,19 @@
+{
+  "name": "@trpcdev/spikes",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typeperf": "node builder-generics/bench.ts",
+    "bundle": "node effect-bundle/measure.ts"
+  },
+  "dependencies": {
+    "trpcdev": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "effect": "4.0.2",
+    "typescript": "^7.0.2",
+    "vite-plus": "1.1.0"
+  }
+}

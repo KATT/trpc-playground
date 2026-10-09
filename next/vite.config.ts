@@ -30,6 +30,7 @@ export default defineConfig({
     ],
     typecheck: {
       enabled: true,
+      tsconfig: './tsconfig.vitest.json',
       include: ['packages/*/src/**/*.test-d.ts', 'spikes/**/*.test-d.ts'],
     },
   },

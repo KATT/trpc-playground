@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
+  "include": ["packages/*/src/**/*.test-d.ts", "spikes/**/*.test-d.ts"]
+}

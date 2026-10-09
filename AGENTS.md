@@ -19,6 +19,18 @@ Start here:
 
 Search `vnext/` before designing or implementing. Implement under `next/`. Do not silently diverge from a recorded decision.
 
+## Running `next/`
+
+`next/` is its own pnpm workspace. Node is pinned in `next/.nvmrc` (same version as the repo-root `.nvmrc`). From `next/`:
+
+```bash
+nvm use
+pnpm install
+pnpm test
+```
+
+`pnpm typecheck` and `pnpm check` are the other local gates. Commands are listed in `next/README.md`. If `node -v` is not 24.x, run `nvm use` before install or test.
+
 <!-- vendor-src:start -->
 
 ## Vendored Source

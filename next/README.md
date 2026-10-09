@@ -25,6 +25,7 @@ Node is pinned in `.nvmrc` (`24.21.0`, same version as the repo root). From this
 nvm use
 pnpm install
 pnpm test
+pnpm example
 ```
 
 | Command          | What it does                                                  |
@@ -34,6 +35,7 @@ pnpm test
 | `pnpm check`     | `vp check`: format check, lint and type-aware lint/type check |
 | `pnpm fix`       | `vp check --fix`: format and autofix                          |
 | `pnpm test`      | `vp test run`: Vitest, including `*.test-d.ts` type tests     |
+| `pnpm example`   | Runs `examples/minimal` on Node (workspace-linked `trpcdev`)  |
 
 **Pre-commit:** `.vite-hooks/pre-commit` runs `vp staged` (see `staged` in `vite.config.ts`): `vp check --fix` on staged files under `next/`, plus `vp test related` for staged `.ts` files. `pnpm install` enables it via `vp config` unless `core.hooksPath` is already set to something else. Skip once with `VP_GIT_HOOKS=0 git commit …`.
 

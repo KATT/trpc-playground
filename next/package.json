@@ -11,6 +11,7 @@
     "lint": "vp lint",
     "test": "vp test run",
     "test:watch": "vp test watch",
+    "example": "node examples/minimal/index.ts",
     "build": "pnpm -r run build"
   },
   "devDependencies": {

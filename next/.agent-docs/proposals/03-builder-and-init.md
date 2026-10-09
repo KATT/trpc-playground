@@ -282,6 +282,6 @@ export const appRouter = {
 - **Q3.1:** [ ] I-A · [ ] I-B · [ ] I-C
 - **Q3.2:** [ ] G-A · [ ] G-B
 - **Q3.3:** [ ] E-A · [ ] E-B · [ ] E-C
-- **Q3.4:** [ ] yes · [ ] no
+- **Q3.4:** [x] yes · [ ] no → [0001](../decisions/0001-trpc-definition-key.md)
 - **Q3.5:** [ ] keep `t` · [ ] top-level imports · [ ] both
 - **Notes:**

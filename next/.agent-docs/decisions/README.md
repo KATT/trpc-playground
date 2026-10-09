@@ -6,9 +6,9 @@ Decisions are never edited after the fact except to add a "Superseded by" link. 
 
 ## Log
 
-| #   | Decision   | Proposal | Date | Status |
-| --- | ---------- | -------- | ---- | ------ |
-| —   | _none yet_ |          |      |        |
+| #                                     | Decision                         | Proposal                                  | Date       | Status   |
+| ------------------------------------- | -------------------------------- | ----------------------------------------- | ---------- | -------- |
+| [0001](./0001-trpc-definition-key.md) | `'~trpc'` replaces `_def` (Q3.4) | [03](../proposals/03-builder-and-init.md) | 2026-10-09 | accepted |
 
 ## Template
 

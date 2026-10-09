@@ -6,7 +6,7 @@ It contains:
 
 - **[`approach.md`](./approach.md):** how we work. It covers the process, how agents use this folder, principles, the technical approach, phases and risks. Start here.
 - **[`proposals/`](./proposals):** one file per API area. Each has today's v11 behaviour, options with code sketches, a recommendation, numbered questions and a blank **Decision** block.
-- **[`decisions/`](./decisions):** the decision log (empty until Alex decides).
+- **[`decisions/`](./decisions):** the decision log.
 - **[`reference/`](./reference):** shared background.
   - [`orpc-parity.md`](./reference/orpc-parity.md): the oRPC comparison table mapped to proposals, and the decisions that could block parity.
   - [`v11-inventory.md`](./reference/v11-inventory.md): what v11 ships, and whether each item is kept, changed or deleted.

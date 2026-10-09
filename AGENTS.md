@@ -1,14 +1,20 @@
 # Agents
 
-## tRPC vNext design docs
+## Rewrite in progress
 
-Design work for the next version of tRPC lives in `vnext/` (brief: `ideas.md`). Before designing or implementing anything for vNext:
+This repo is a **from-scratch rewrite** of tRPC (vNext / `v12` branch), not maintenance of current tRPC.
 
-- Read `vnext/approach.md` for the process, principles and workflow.
-- Search `vnext/` first (`rg -n "<topic>" vnext/`). Decisions in `vnext/decisions/` override proposals in `vnext/proposals/`, which override memory.
-- Never silently diverge from a recorded decision. Propose a superseding one instead.
-- Flag any choice that could block a row in `vnext/reference/orpc-parity.md`, and ask before recording it.
-- Write research and spike results to `vnext/notes/`.
+Start here:
+
+- `ideas.md` — brief and constraints
+- `vnext/approach.md` — process, principles, phases
+- `vnext/README.md` — proposal index and how to decide
+- `vnext/proposals/` — API proposals (options + recommendations; Alex decides)
+- `vnext/decisions/` — accepted decisions (overrides proposals)
+- `vnext/reference/` — oRPC parity, v11 inventory, prior art
+- `vnext/notes/` — spikes and research
+
+Search `vnext/` before designing or implementing. Do not silently diverge from a recorded decision.
 
 <!-- vendor-src:start -->
 

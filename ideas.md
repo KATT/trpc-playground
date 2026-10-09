@@ -29,9 +29,10 @@
 - We want to have a design that allows for OpenAPI support like oRPC does (orpc.dev)
 - For now, we can publish everything under the `@trpcdev` scope rather than `@trpc` on npm (but we don't need to have releases for this anytime soon, just make sure we have examples that work with a linked local package)
 - We push to https://github.com/KATT/trpc-playground rather than trpc. Create new `v12` branch for this for the main there based on origin/main in `trpc/trpc`
-- YOLO semantic commits straight to the `v12` branch. No need to create PRs for now
+- YOLO semantic commits straight to the `v12` branch. No need to create PRs for now. Some precommit hook that auto-formats + runs tests on what is changed is enough
 - We should probably recreate all CI things to be a lot simpler than what is today
 - We should aim for feature parity with https://orpc.dev/docs/comparison. Highlight anything and prompt user when we make API decisions that may stop us from getting there.
+- Rather than have a `@trpc/server` and a `@trpc/client` package, everything that doesn't have an external dependency (except Effect), eg. React etc, should be in a package just called `trpcdev` and exports can be in `/server` and `/client` folders etc
 
 The only dev deps I can think of that should be:
 

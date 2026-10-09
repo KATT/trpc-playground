@@ -5,10 +5,12 @@ on:
     branches: [v12]
     paths:
       - 'next/**'
+      - 'vendor-src.json'
       - '.github/workflows/next.yml'
   pull_request:
     paths:
       - 'next/**'
+      - 'vendor-src.json'
       - '.github/workflows/next.yml'
 
 concurrency:

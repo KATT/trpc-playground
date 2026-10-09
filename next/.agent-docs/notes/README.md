@@ -16,3 +16,6 @@ Agent-written working notes: research, spike results, benchmarks and anything wo
 | [danSON port + QP-C query params](./danson-port-and-query-params.md) | 11     | `danson/`             |
 | [Effect client bundle size](./effect-client-bundle-size.md)          | 02 (g) | `effect-bundle/`      |
 | [Returned-error inference](./returned-error-inference.md)            | 07, 02 | `returned-errors/`    |
+| [Middleware and input typing](./middleware-and-input-typing.md)      | 05, 06 | `middleware-typing/`  |
+| [Effect services: S1 vs S2](./effect-services-typing.md)             | 02, 06 | `effect-services/`    |
+| [Contracts and routers typing](./contracts-and-routers-typing.md)    | 09, 08 | `contracts/`          |

@@ -208,6 +208,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.1
+      danson:
+        specifier: 0.13.1
+        version: 0.13.1
       effect:
         specifier: 4.0.2
         version: 4.0.2
@@ -1028,6 +1031,10 @@ packages:
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
+  danson@0.13.1:
+    resolution: {integrity: sha512-SG+H3jzdH3AsUsiiFNwSMicU9r9kV1g5YFyQ7d+zauzeKnghuxnpmosl7mb7JIcyW8j1EJPTZEz1TvWT+utFQw==}
+    engines: {node: '>=18.3.0'}
+
   dequal@2.0.3:
     resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
     engines: {node: '>=6'}
@@ -1803,6 +1810,8 @@ snapshots:
   chai@6.3.0: {}
 
   convert-source-map@2.0.0: {}
+
+  danson@0.13.1: {}
 
   dequal@2.0.3: {}
 

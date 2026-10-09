@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "danson": "0.13.1",
     "effect": "4.0.2",
     "typescript": "^7.0.2",
     "vite-plus": "1.1.0"

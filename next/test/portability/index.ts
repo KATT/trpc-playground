@@ -19,6 +19,12 @@ import {
 import { contract, toContract, type inferContract } from 'trpcdev/contract';
 import { createEffectClient } from 'trpcdev/effect';
 import {
+  createOpenAPIHandler,
+  generateOpenAPI,
+  openAPILink,
+  openAPIReference,
+} from 'trpcdev/openapi';
+import {
   createFetchHandler,
   createRouterClient,
   error,
@@ -220,6 +226,25 @@ export const userContractJSON = toContract(userRouter);
 export const contractClient = createTRPCClient({
   router: userContract,
   links: [httpLink({ url: '/trpc' })],
+});
+
+export const openapi = createOpenAPIHandler({
+  router: userRouter,
+  createContext: () => ({ user: null }),
+  plugins: [
+    openAPIReference({
+      specGenerateOptions: { info: { title: 'Users', version: '1.0.0' } },
+    }),
+  ],
+});
+
+export const openapiDocument = generateOpenAPI(userRouter, {
+  info: { title: 'Users', version: '1.0.0' },
+});
+
+export const restClient = createTRPCClient({
+  router: userContractJSON,
+  links: [openAPILink({ url: '/', contract: userContractJSON })],
 });
 
 export const caller = createRouterClient(appRouter, {

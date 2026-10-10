@@ -65,6 +65,22 @@ const router = {
       Stream.concat(Stream.fail(error({ code: 'TOO_MANY_REQUESTS' }))),
     ),
   ),
+  uploads: t.procedure.subscription(async function* () {
+    for (const name of ['big.mov', 'small.txt']) {
+      yield tracked(name, {
+        name,
+        size: (async () => {
+          await sleep(name === 'big.mov' ? 30 : 5);
+          return name.length * 1000;
+        })(),
+        progress: (async function* () {
+          yield 50;
+          await sleep(5);
+          yield 100;
+        })(),
+      });
+    }
+  }),
   secret: authed.subscription(async function* ({ ctx }) {
     yield `hi ${ctx.user}`;
   }),
@@ -200,4 +216,16 @@ test('the wire format is plain SSE', async () => {
   const text = await res.text();
   expect(text).toContain('id: 3\ndata: ');
   expect(text.trimEnd().endsWith('event: done\ndata:')).toBe(true);
+});
+
+test('events can hold deferred values; their chunks stream after the event', async () => {
+  await using ctx = await setup();
+  const uploads = await collect(ctx.client.uploads.subscribe());
+  expect(uploads.map((u) => u.id)).toEqual(['big.mov', 'small.txt']);
+  expectTypeOf(uploads[0]!.data.size).toEqualTypeOf<Promise<number>>();
+  expectTypeOf(uploads[0]!.data.progress).toExtend<AsyncIterable<number>>();
+  expect(await Promise.all(uploads.map((u) => u.data.size))).toEqual([
+    7000, 9000,
+  ]);
+  expect(await collect(uploads[1]!.data.progress)).toEqual([50, 100]);
 });

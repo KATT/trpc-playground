@@ -1,0 +1,406 @@
+import { request as httpRequest, createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { Stream } from 'effect';
+import {
+  createTRPCClient,
+  httpLink,
+  routerType,
+  safe,
+  splitLink,
+  wsLink,
+} from 'trpcdev/client';
+import { toNodeListener, toNodeUpgradeListener } from 'trpcdev/node';
+import {
+  createFetchHandler,
+  error,
+  initTRPC,
+  tracked,
+  type CreateContextOpts,
+} from 'trpcdev/server';
+import { createTestServer, type TestServer } from 'trpcdev/testing';
+import { expect, expectTypeOf, test, vi } from 'vite-plus/test';
+import { z } from 'zod';
+
+interface Ctx {
+  user: string | null;
+  transport: string;
+}
+const t = initTRPC<{ ctx: Ctx }>();
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const state = {
+  cleanups: 0,
+  lastEventIds: [] as (string | undefined)[],
+  contexts: [] as CreateContextOpts['info'][],
+};
+let current: TestServer | undefined;
+
+const router = {
+  hello: t.procedure
+    .input(z.object({ name: z.string() }))
+    .query(({ input, ctx }) => `hello ${input.name} over ${ctx.transport}`),
+  whoami: t.procedure.query(({ ctx }) => ctx.user),
+  add: t.procedure
+    .input(z.object({ a: z.number(), b: z.number() }))
+    .mutation(({ input }) => input.a + input.b),
+  find: t.procedure
+    .input(z.object({ id: z.string() }))
+    .query(({ input }) =>
+      input.id === '1'
+        ? { id: '1', at: new Date(0) }
+        : error({ code: 'NOT_FOUND', data: { id: input.id } }),
+    ),
+  slow: t.procedure.query(async ({ signal }) => {
+    await sleep(50);
+    return signal.aborted ? 'aborted' : 'done';
+  }),
+  report: t.procedure.query(() => ({
+    title: 'Report',
+    total: (async () => {
+      await sleep(20);
+      return 42;
+    })(),
+    rows: (async function* () {
+      yield 'a';
+      await sleep(5);
+      yield 'b';
+    })(),
+  })),
+  ticks: t.procedure.subscription(async function* ({ signal }) {
+    try {
+      let n = 0;
+      while (!signal.aborted) {
+        yield n++;
+        await sleep(5);
+      }
+    } finally {
+      state.cleanups++;
+    }
+  }),
+  posts: t.procedure.subscription(async function* ({ lastEventId }) {
+    state.lastEventIds.push(lastEventId);
+    const start = lastEventId ? Number(lastEventId) + 1 : 1;
+    for (let id = start; id <= 4; id++) {
+      yield tracked(String(id), { id });
+      if (id === 2 && !lastEventId) {
+        await sleep(10);
+        current!.dropConnections();
+        await sleep(1000);
+      }
+    }
+  }),
+  jobs: t.procedure.subscription(async function* () {
+    for (const id of ['a', 'b']) {
+      yield {
+        id,
+        result: (async () => {
+          await sleep(id === 'a' ? 30 : 5);
+          return `${id} done`;
+        })(),
+      };
+    }
+  }),
+  failing: t.procedure.subscription(async function* () {
+    yield 1;
+    throw error({ code: 'CONFLICT', message: 'Gone' });
+  }),
+  stream: t.procedure.subscription(() => Stream.make('x', 'y')),
+};
+type AppRouter = typeof router;
+
+async function setup(
+  opts: { user?: string; idleMs?: number; params?: boolean } = {},
+) {
+  const server = await createTestServer({
+    router,
+    createContext: ({ info }) => {
+      state.contexts.push(info);
+      return {
+        user:
+          (info.connectionParams?.['token'] as string | undefined) ??
+          opts.user ??
+          null,
+        transport: info.transport,
+      };
+    },
+  });
+  current = server;
+  const link = wsLink({
+    url: server.wsUrl,
+    reconnect: { delayMs: () => 10 },
+    idleMs: opts.idleMs,
+    ...(opts.params
+      ? { connectionParams: async () => ({ token: 'kim' }) }
+      : {}),
+  });
+  const client = createTRPCClient({
+    router: routerType<AppRouter>(),
+    links: [link],
+  });
+  return {
+    server,
+    link,
+    client,
+    [Symbol.asyncDispose]: async () => {
+      await link.close();
+      await server.close();
+    },
+  };
+}
+
+async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const item of iterable) items.push(item);
+  return items;
+}
+
+const countUpgrades = (server: TestServer) => {
+  const counter = { count: 0 };
+  server.server.on('upgrade', () => counter.count++);
+  return counter;
+};
+
+test('queries and mutations share one WebSocket', async () => {
+  await using ctx = await setup();
+  const upgrades = countUpgrades(ctx.server);
+  const [hello, sum] = await Promise.all([
+    ctx.client.hello.query({ name: 'ws' }),
+    ctx.client.add.mutate({ a: 1, b: 2 }),
+  ]);
+  expect(hello).toBe('hello ws over websocket');
+  expectTypeOf(hello).toEqualTypeOf<string>();
+  expect(sum).toBe(3);
+  expect(await ctx.client.hello.query({ name: 'again' })).toBe(
+    'hello again over websocket',
+  );
+  expect(upgrades.count).toBe(1);
+  expect(ctx.server.requests).toHaveLength(0);
+});
+
+test('the serializer and typed errors work as over HTTP', async () => {
+  await using ctx = await setup();
+  const post = await ctx.client.find.query({ id: '1' });
+  expect(post.at).toEqual(new Date(0));
+  const res = await safe(ctx.client.find.query({ id: '2' }));
+  expect(res.error).toMatchObject({
+    code: 'NOT_FOUND',
+    status: 404,
+    defined: true,
+    data: { id: '2' },
+  });
+  const invalid = await safe(
+    ctx.client.add.mutate({ a: 1, b: 'two' as unknown as number }),
+  );
+  expect(invalid.error).toMatchObject({ code: 'BAD_REQUEST', defined: true });
+});
+
+test('connectionParams reach createContext once per connection', async () => {
+  await using ctx = await setup({ params: true });
+  state.contexts = [];
+  expect(await ctx.client.whoami.query()).toBe('kim');
+  expect(state.contexts[0]).toMatchObject({
+    transport: 'websocket',
+    connectionParams: { token: 'kim' },
+    calls: [{ path: 'whoami', type: 'query' }],
+  });
+});
+
+test('aborting a call sends an abort and aborts the server signal', async () => {
+  await using ctx = await setup();
+  const controller = new AbortController();
+  const pending = ctx.client.slow.query(undefined, {
+    signal: controller.signal,
+  });
+  await sleep(5);
+  controller.abort();
+  await expect(pending).rejects.toMatchObject({
+    code: 'CLIENT_CLOSED_REQUEST',
+  });
+  expect(await ctx.client.slow.query()).toBe('done');
+});
+
+test('deferred values in a result stream over the socket', async () => {
+  await using ctx = await setup();
+  const report = await ctx.client.report.query();
+  expect(report.title).toBe('Report');
+  expectTypeOf(report.total).toEqualTypeOf<Promise<number>>();
+  expect(await report.total).toBe(42);
+  expect(await collect(report.rows)).toEqual(['a', 'b']);
+});
+
+test('subscriptions stream events and stop when the loop breaks', async () => {
+  await using ctx = await setup();
+  const before = state.cleanups;
+  const seen: number[] = [];
+  for await (const n of ctx.client.ticks.subscribe()) {
+    seen.push(n);
+    if (n === 2) break;
+  }
+  expect(seen).toEqual([0, 1, 2]);
+  await vi.waitFor(() => expect(state.cleanups).toBe(before + 1));
+  expect(await collect(ctx.client.stream.subscribe())).toEqual(['x', 'y']);
+});
+
+test('errors mid-subscription reach the loop', async () => {
+  await using ctx = await setup();
+  const seen: number[] = [];
+  await expect(async () => {
+    for await (const n of ctx.client.failing.subscribe()) seen.push(n);
+  }).rejects.toMatchObject({ code: 'CONFLICT', status: 409, defined: false });
+  expect(seen).toEqual([1]);
+});
+
+test('after a dropped connection, subscriptions resume from the last tracked id', async () => {
+  await using ctx = await setup();
+  state.lastEventIds = [];
+  const events = await collect(ctx.client.posts.subscribe());
+  expect(events.map((e) => e.data.id)).toEqual([1, 2, 3, 4]);
+  expect(state.lastEventIds).toEqual([undefined, '2']);
+});
+
+test('queries in flight fail when the connection drops', async () => {
+  await using ctx = await setup();
+  await ctx.client.whoami.query();
+  const pending = ctx.client.slow.query();
+  await sleep(5);
+  ctx.server.dropConnections();
+  await expect(pending).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+  expect(await ctx.client.slow.query()).toBe('done');
+});
+
+test('deferred values inside subscription events', async () => {
+  await using ctx = await setup();
+  const jobs = await collect(ctx.client.jobs.subscribe());
+  expect(jobs.map((j) => j.id)).toEqual(['a', 'b']);
+  expectTypeOf(jobs[0]!.result).toEqualTypeOf<Promise<string>>();
+  expect(await Promise.all(jobs.map((j) => j.result))).toEqual([
+    'a done',
+    'b done',
+  ]);
+});
+
+test('an idle connection closes and the next call reconnects', async () => {
+  await using ctx = await setup({ idleMs: 10 });
+  const upgrades = countUpgrades(ctx.server);
+  await ctx.client.whoami.query();
+  await sleep(40);
+  await ctx.client.whoami.query();
+  expect(upgrades.count).toBe(2);
+});
+
+test('splitLink sends subscriptions over WebSockets and the rest over HTTP', async () => {
+  await using server = await createTestServer({
+    router,
+    createContext: ({ info }) => ({ user: null, transport: info.transport }),
+  });
+  await using ws = wsLink({ url: server.wsUrl });
+  const client = createTRPCClient({
+    router: routerType<AppRouter>(),
+    links: [
+      splitLink({
+        condition: (op) => op.type === 'subscription',
+        true: ws,
+        false: httpLink({ url: server.url }),
+      }),
+    ],
+  });
+  expect(await client.hello.query({ name: 'a' })).toBe('hello a over http');
+  expect(await collect(client.stream.subscribe())).toEqual(['x', 'y']);
+  expect(server.requests).toHaveLength(1);
+});
+
+test('a client with another protocol version gets a connection error', async () => {
+  await using ctx = await setup();
+  const socket = new WebSocket(ctx.server.wsUrl);
+  await new Promise((resolve) => socket.addEventListener('open', resolve));
+  const message = new Promise<unknown>((resolve) =>
+    socket.addEventListener('message', (e) =>
+      resolve(JSON.parse(String(e.data))),
+    ),
+  );
+  const closed = new Promise<CloseEvent>((resolve) =>
+    socket.addEventListener('close', resolve),
+  );
+  socket.send(JSON.stringify({ type: 'init', version: '0' }));
+  expect(await message).toMatchObject({
+    id: null,
+    type: 'error',
+    status: 400,
+    body: { json: { error: { code: 'UNSUPPORTED_PROTOCOL' } } },
+  });
+  expect((await closed).code).toBe(1002);
+});
+
+test('the Node upgrade handles large messages and enforces maxPayload', async () => {
+  const echoRouter = {
+    length: t.procedure.input(z.string()).query(({ input }) => input.length),
+  };
+  const handler = createFetchHandler({
+    router: echoRouter,
+    createContext: () => ({ user: null, transport: 'x' }),
+  });
+  const server = createServer(toNodeListener(handler)).on(
+    'upgrade',
+    toNodeUpgradeListener(handler, { maxPayload: 200_000 }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await using link = wsLink({
+    url: `ws://127.0.0.1:${port}/trpc`,
+    reconnect: { attempts: 0 },
+  });
+  const client = createTRPCClient<typeof echoRouter>({ links: [link] });
+  try {
+    expect(await client.length.query('x'.repeat(100_000))).toBe(100_000);
+    await expect(
+      client.length.query('x'.repeat(300_000)),
+    ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('the Node upgrade checks the path and allowOrigin', async () => {
+  const handler = createFetchHandler({
+    router,
+    createContext: () => ({ user: null, transport: 'x' }),
+  });
+  const server = createServer(toNodeListener(handler)).on(
+    'upgrade',
+    toNodeUpgradeListener(handler, {
+      allowOrigin: (origin) => origin === 'https://app.example.com',
+    }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const upgrade = (path: string, origin: string) =>
+    new Promise<number>((resolve) => {
+      const req = httpRequest({
+        port,
+        host: '127.0.0.1',
+        path,
+        headers: {
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+          origin,
+          'sec-websocket-version': '13',
+          'sec-websocket-key': Buffer.alloc(16, 1).toString('base64'),
+        },
+      });
+      req.on('upgrade', (res, socket) => {
+        socket.destroy();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('response', (res) => resolve(res.statusCode ?? 0));
+      req.end();
+    });
+  try {
+    expect(await upgrade('/trpc', 'https://app.example.com')).toBe(101);
+    expect(await upgrade('/trpc', 'https://evil.example.com')).toBe(403);
+    expect(await upgrade('/elsewhere', 'https://app.example.com')).toBe(404);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

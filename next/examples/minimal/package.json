@@ -6,9 +6,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "trpcdev": "workspace:*"
+    "trpcdev": "workspace:*",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "typescript": "^7.0.2"
   }
 }

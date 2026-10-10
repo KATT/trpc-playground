@@ -27,17 +27,18 @@ export interface TRPCClientContext {
 }
 
 /**
- * One call, as links see it.
+ * One call, as links see it. `TContext` types the `context` fields a link
+ * declares it reads.
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface Operation {
+export interface Operation<TContext extends object = {}> {
   readonly id: number;
   readonly type: ProcedureType;
   /** `'post.byId'` */
   readonly path: string;
   readonly input: unknown;
-  readonly context: TRPCClientContext;
+  readonly context: TRPCClientContext & Partial<TContext>;
   readonly signal: AbortSignal | undefined;
   /** Subscriptions: resume after this event id. */
   readonly lastEventId?: string | undefined;
@@ -56,8 +57,8 @@ export type OperationStream = Stream.Stream<unknown, AnyTRPCError>;
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface EffectLinkOpts {
-  readonly op: Operation;
+export interface EffectLinkOpts<TContext extends object = {}> {
+  readonly op: Operation<TContext>;
   /** The rest of the chain. */
   readonly next: (op: Operation) => OperationStream;
 }
@@ -68,20 +69,54 @@ export interface EffectLinkOpts {
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface PromiseLinkOpts {
-  readonly op: Operation;
+export interface PromiseLinkOpts<TContext extends object = {}> {
+  readonly op: Operation<TContext>;
   readonly next: (op: Operation) => Promise<unknown>;
 }
 
 /**
- * A link: one step of the client's request chain. The last link sends the
- * request.
+ * What a link declares it reads (17 (c)). `context` fields are added to the
+ * call options' `context` of clients created with `router:` (F-B).
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface TRPCLink {
-  readonly '~link': (opts: EffectLinkOpts) => OperationStream;
+export interface LinkDecl {
+  context?: object;
 }
+
+/**
+ * A link: one step of the client's request chain, a function from an
+ * operation and the rest of the chain to the result stream. The last link
+ * sends the request. `TDecl` is what it reads from `context`; `TRouter` is
+ * set on router-aware links like a typed `splitLink`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface TRPCLink<TDecl extends LinkDecl = {}, TRouter = any> {
+  (opts: EffectLinkOpts): OperationStream;
+  /**
+   * Type-only. `decl` is invariant, so a link that declares nothing does not
+   * absorb the declarations of the others in an array.
+   */
+  readonly '~types'?: {
+    readonly decl: (decl: TDecl) => TDecl;
+    readonly router: TRouter;
+  };
+}
+
+/**
+ * Any link, whatever it declares.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type AnyLink = TRPCLink<any, any>;
+
+/** The `context` a link's declaration adds. @internal */
+export type DeclContext<TDecl> = TDecl extends { context: infer C }
+  ? C extends object
+    ? C
+    : {}
+  : {};
 
 /** Turns anything a link threw into a client error. @internal */
 export function toClientError(cause: unknown): AnyTRPCError {
@@ -142,29 +177,28 @@ export const firstValue = (
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export function link(
-  fn: (opts: PromiseLinkOpts) => Promise<unknown>,
-): TRPCLink {
-  return {
-    '~link': ({ op, next }) => {
-      const promiseNext = (o: Operation): Promise<unknown> =>
-        o.type === 'subscription'
-          ? Promise.resolve(Stream.toAsyncIterable(next(o)))
-          : Effect.runPromise(firstValue(next(o)));
-      const result = Effect.tryPromise({
-        try: () => fn({ op, next: promiseNext }),
-        catch: toClientError,
-      });
-      if (op.type !== 'subscription') return Stream.fromEffect(result);
-      return Stream.unwrap(
-        Effect.map(result, (events) =>
-          Stream.fromAsyncIterable(
-            events as AsyncIterable<unknown>,
-            toClientError,
-          ),
+export function link<TDecl extends LinkDecl = {}>(
+  fn: (opts: PromiseLinkOpts<DeclContext<TDecl>>) => Promise<unknown>,
+): TRPCLink<TDecl> {
+  return ({ op, next }: EffectLinkOpts) => {
+    const promiseNext = (o: Operation): Promise<unknown> =>
+      o.type === 'subscription'
+        ? Promise.resolve(Stream.toAsyncIterable(next(o)))
+        : Effect.runPromise(firstValue(next(o)));
+    const result = Effect.tryPromise({
+      try: () =>
+        fn({ op: op as Operation<DeclContext<TDecl>>, next: promiseNext }),
+      catch: toClientError,
+    });
+    if (op.type !== 'subscription') return Stream.fromEffect(result);
+    return Stream.unwrap(
+      Effect.map(result, (events) =>
+        Stream.fromAsyncIterable(
+          events as AsyncIterable<unknown>,
+          toClientError,
         ),
-      );
-    },
+      ),
+    );
   };
 }
 
@@ -180,13 +214,13 @@ export function link(
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-link.effect = (fn: (opts: EffectLinkOpts) => OperationStream): TRPCLink => ({
-  '~link': fn,
-});
+link.effect = <TDecl extends LinkDecl = {}>(
+  fn: (opts: EffectLinkOpts<DeclContext<TDecl>>) => OperationStream,
+): TRPCLink<TDecl> => fn as TRPCLink<TDecl>;
 
 /** Runs an operation through a link chain. @internal */
 export function runLinks(
-  links: ReadonlyArray<TRPCLink>,
+  links: ReadonlyArray<AnyLink>,
   op: Operation,
 ): OperationStream {
   const at =
@@ -201,7 +235,7 @@ export function runLinks(
           }),
         );
       }
-      return Stream.suspend(() => current['~link']({ op: o, next: at(i + 1) }));
+      return Stream.suspend(() => current({ op: o, next: at(i + 1) }));
     };
   return at(0)(op);
 }

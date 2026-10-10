@@ -5,11 +5,18 @@ import {
   firstValue,
   runLinks,
   type Operation,
+  type AnyLink,
   type OperationStream,
   type TRPCClientContext,
   type TRPCLink,
 } from './link.ts';
-import type { SubscribeOptions, TRPCClient, TRPCPromise } from './types.ts';
+import type {
+  LinksContext,
+  RouterOf,
+  SubscribeOptions,
+  TRPCClient,
+  TRPCPromise,
+} from './types.ts';
 
 /** @internal */
 export function createRecursiveProxy(
@@ -40,7 +47,7 @@ export function makeOperation(
   type: ProcedureType,
   path: string,
   input: unknown,
-  opts: SubscribeOptions | undefined,
+  opts: SubscribeOptions<object> | undefined,
 ): Operation {
   return {
     id: ++nextId,
@@ -77,7 +84,22 @@ export function untilAborted(
  */
 export interface TRPCClientOptions {
   /** The request chain. The last link sends the request. */
-  links: ReadonlyArray<TRPCLink>;
+  links: ReadonlyArray<AnyLink>;
+}
+
+/**
+ * Options for a client typed from a `router:` value (17 D-C).
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface TypedClientOptions<
+  TSource,
+  TLinks extends ReadonlyArray<TRPCLink<any, RouterOf<TSource>>>,
+> {
+  /** `routerType<AppRouter>()`, a contract, or the router itself. */
+  router: TSource;
+  /** The request chain. What the links declare types the call options. */
+  links: TLinks;
 }
 
 /**
@@ -145,14 +167,17 @@ export function createUntypedClient(
 }
 
 /**
- * Creates a typed client for a router (16 CS-A).
+ * Creates a typed client for a router (16 CS-A). With `router:` (17 D-C)
+ * the call options' `context` is typed from what the links declare, and
+ * router-aware links like `splitLink` see typed paths.
  *
  * @example
  * ```ts
  * import type { AppRouter } from './server';
  *
- * const client = createTRPCClient<AppRouter>({
- *   links: [httpLink({ url: 'http://localhost:3000/trpc' })],
+ * const client = createTRPCClient({
+ *   router: routerType<AppRouter>(),
+ *   links: [dedupeLink(), httpLink({ url: 'http://localhost:3000/trpc' })],
  * });
  * const post = await client.post.byId.query({ id: '1' }, { signal });
  * for await (const event of client.onPost.subscribe()) render(event);
@@ -160,9 +185,27 @@ export function createUntypedClient(
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
+export function createTRPCClient<
+  TSource,
+  TLinks extends ReadonlyArray<TRPCLink<any, RouterOf<TSource>>>,
+>(
+  opts: TypedClientOptions<TSource, TLinks>,
+): TRPCClient<RouterOf<TSource>, LinksContext<TLinks>>;
+/**
+ * Creates a typed client from an explicit router type. `context` is the
+ * open {@link TRPCClientContext} interface.
+ *
+ * @example
+ * ```ts
+ * const client = createTRPCClient<AppRouter>({ links: [httpLink({ url })] });
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export function createTRPCClient<TRouter>(
   opts: TRPCClientOptions,
-): TRPCClient<TRouter> {
+): TRPCClient<TRouter>;
+export function createTRPCClient(opts: TRPCClientOptions): unknown {
   const untyped = createUntypedClient(opts);
   return createRecursiveProxy((path, args) => {
     const method = path.at(-1) as keyof typeof METHODS | undefined;
@@ -173,7 +216,10 @@ export function createTRPCClient<TRouter>(
       );
     }
     const procedurePath = path.slice(0, -1).join('.');
-    const [input, callOpts] = args as [unknown, SubscribeOptions | undefined];
+    const [input, callOpts] = args as [
+      unknown,
+      SubscribeOptions<object> | undefined,
+    ];
     if (type === 'subscription') {
       return untyped.subscribe({ path: procedurePath, input, ...callOpts });
     }

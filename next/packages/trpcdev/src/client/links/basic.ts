@@ -1,49 +1,172 @@
-import { Effect, Stream } from 'effect';
+import { Effect, Exit, Stream } from 'effect';
 import type { AnyTRPCError } from '../../internal/error.ts';
+import { defaultSerializer } from '../../serializer/index.ts';
 import {
+  firstValue,
   link,
   runLinks,
+  type AnyLink,
   type Operation,
   type OperationStream,
   type TRPCLink,
 } from '../link.ts';
+import type { RouterPaths } from '../types.ts';
 
-const asArray = (links: TRPCLink | ReadonlyArray<TRPCLink>) =>
-  Array.isArray(links)
-    ? (links as ReadonlyArray<TRPCLink>)
-    : [links as TRPCLink];
+type Chain = AnyLink | ReadonlyArray<AnyLink>;
+
+const asArray = (links: Chain) =>
+  Array.isArray(links) ? (links as ReadonlyArray<AnyLink>) : [links as AnyLink];
+
+type ChainDecl<T> =
+  T extends ReadonlyArray<infer L>
+    ? L extends TRPCLink<infer D, any>
+      ? D
+      : never
+    : T extends TRPCLink<infer D, any>
+      ? D
+      : never;
 
 /**
  * Options for {@link splitLink}.
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface SplitLinkOptions {
-  condition: (op: Operation) => boolean;
+export interface SplitLinkOptions<
+  TRouter = any,
+  TTrue extends Chain = Chain,
+  TFalse extends Chain = Chain,
+> {
+  /** With `router:` on the client, `op.path` is the router's paths. */
+  condition: (
+    op: Operation & { readonly path: RouterPaths<TRouter> },
+  ) => boolean;
   /** The chain for operations where `condition` is true. */
-  true: TRPCLink | ReadonlyArray<TRPCLink>;
+  true: TTrue;
   /** The chain for the rest. */
-  false: TRPCLink | ReadonlyArray<TRPCLink>;
+  false: TFalse;
 }
 
 /**
- * Routes each operation to one of two chains.
+ * Routes each operation to one of two chains. Declares what both chains
+ * declare.
  *
  * @example
  * ```ts
  * splitLink({
  *   condition: (op) => op.type === 'subscription',
- *   true: httpLink({ url }),
+ *   true: wsLink({ url }),
  *   false: httpLink({ url, batch: true }),
  * });
  * ```
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export function splitLink(opts: SplitLinkOptions): TRPCLink {
+export function splitLink<
+  TRouter = any,
+  TTrue extends Chain = Chain,
+  TFalse extends Chain = Chain,
+>(
+  opts: SplitLinkOptions<TRouter, TTrue, TFalse>,
+): TRPCLink<ChainDecl<TTrue> | ChainDecl<TFalse>, TRouter> {
   const yes = asArray(opts.true);
   const no = asArray(opts.false);
-  return link.effect(({ op }) => runLinks(opts.condition(op) ? yes : no, op));
+  return link.effect(({ op }) =>
+    runLinks(opts.condition(op as never) ? yes : no, op),
+  ) as TRPCLink<any, TRouter>;
+}
+
+/**
+ * Options for {@link dedupeLink}.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface DedupeLinkOptions {
+  /**
+   * The key identical queries share.
+   * @default the path and the serialized input
+   */
+  key?: (op: Operation) => string;
+}
+
+/**
+ * What {@link dedupeLink} reads from `context`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface DedupeContext {
+  /** `false` sends this query on its own. */
+  dedupe?: boolean;
+}
+
+/**
+ * Shares one request between identical queries in flight at the same time.
+ * Every caller gets the same result value, so a deferred `AsyncIterable`
+ * in it is shared too: send such queries with `context: { dedupe: false }`.
+ * The request is aborted only when every caller has aborted.
+ *
+ * @example
+ * ```ts
+ * createTRPCClient({
+ *   router: routerType<AppRouter>(),
+ *   links: [dedupeLink(), httpLink({ url })],
+ * });
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function dedupeLink(
+  opts: DedupeLinkOptions = {},
+): TRPCLink<{ context: DedupeContext }> {
+  const keyOf =
+    opts.key ??
+    ((op: Operation) =>
+      `${op.path}\n${op.input === undefined ? '' : JSON.stringify(defaultSerializer.serialize(op.input))}`);
+  const inFlight = new Map<
+    string,
+    {
+      promise: Promise<Exit.Exit<unknown, AnyTRPCError>>;
+      controller: AbortController;
+      refs: number;
+    }
+  >();
+  return link.effect<{ context: DedupeContext }>(({ op, next }) => {
+    if (op.type !== 'query' || op.context.dedupe === false) return next(op);
+    const key = keyOf(op);
+    return Stream.fromEffect(
+      Effect.callback<unknown, AnyTRPCError>((resume) => {
+        let entry = inFlight.get(key);
+        if (!entry) {
+          const controller = new AbortController();
+          const created = {
+            controller,
+            refs: 0,
+            promise: Effect.runPromiseExit(
+              firstValue(next({ ...op, signal: controller.signal })),
+              { signal: controller.signal },
+            ).finally(() => {
+              if (inFlight.get(key) === created) inFlight.delete(key);
+            }),
+          };
+          entry = created;
+          inFlight.set(key, entry);
+        }
+        const shared = entry;
+        shared.refs++;
+        let settled = false;
+        void shared.promise.then((exit) => {
+          settled = true;
+          resume(exit);
+        });
+        return Effect.sync(() => {
+          if (settled) return;
+          if (--shared.refs === 0) {
+            if (inFlight.get(key) === shared) inFlight.delete(key);
+            shared.controller.abort();
+          }
+        });
+      }),
+    );
+  });
 }
 
 /**

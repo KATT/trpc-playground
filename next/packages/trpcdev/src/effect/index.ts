@@ -17,12 +17,17 @@
 import type { Effect } from 'effect';
 import { Stream } from 'effect';
 import { createRecursiveProxy, makeOperation } from '../client/client.ts';
-import type { TRPCClientOptions } from '../client/client.ts';
-import { firstValue, link, runLinks } from '../client/link.ts';
+import type {
+  TRPCClientOptions,
+  TypedClientOptions,
+} from '../client/client.ts';
+import { firstValue, link, runLinks, type TRPCLink } from '../client/link.ts';
 import type {
   CallArgs,
   CallOptions,
   ClientError,
+  LinksContext,
+  RouterOf,
   SubscribeOptions,
 } from '../client/types.ts';
 import type { Deserialized } from '../internal/types.ts';
@@ -35,18 +40,18 @@ export { link };
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export type DecorateEffectProcedure<P> =
+export type DecorateEffectProcedure<P, TContext extends object = {}> =
   P extends Procedure<infer D>
     ? D['type'] extends 'query'
       ? {
           query(
-            ...args: CallArgs<D['input'], CallOptions>
+            ...args: CallArgs<D['input'], CallOptions<TContext>>
           ): Effect.Effect<Deserialized<D['output']>, ClientError<D['errors']>>;
         }
       : D['type'] extends 'mutation'
         ? {
             mutate(
-              ...args: CallArgs<D['input'], CallOptions>
+              ...args: CallArgs<D['input'], CallOptions<TContext>>
             ): Effect.Effect<
               Deserialized<D['output']>,
               ClientError<D['errors']>
@@ -54,7 +59,7 @@ export type DecorateEffectProcedure<P> =
           }
         : {
             subscribe(
-              ...args: CallArgs<D['input'], SubscribeOptions>
+              ...args: CallArgs<D['input'], SubscribeOptions<TContext>>
             ): Stream.Stream<
               Deserialized<D['output']>,
               ClientError<D['errors']>
@@ -67,10 +72,10 @@ export type DecorateEffectProcedure<P> =
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export type EffectClient<TRouter> = {
+export type EffectClient<TRouter, TContext extends object = {}> = {
   [K in keyof TRouter]: TRouter[K] extends AnyProcedure
-    ? DecorateEffectProcedure<TRouter[K]>
-    : EffectClient<TRouter[K]>;
+    ? DecorateEffectProcedure<TRouter[K], TContext>
+    : EffectClient<TRouter[K], TContext>;
 };
 
 const METHODS = {
@@ -85,7 +90,10 @@ const METHODS = {
  *
  * @example
  * ```ts
- * const client = createEffectClient<AppRouter>({ links: [httpLink({ url })] });
+ * const client = createEffectClient({
+ *   router: routerType<AppRouter>(),
+ *   links: [httpLink({ url })],
+ * });
  * const post = yield* client.post.byId.query({ id: '1' }).pipe(
  *   Effect.catchIf((e) => e.defined && e.code === 'NOT_FOUND', () => Effect.succeed(null)),
  * );
@@ -93,9 +101,26 @@ const METHODS = {
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
+export function createEffectClient<
+  TSource,
+  TLinks extends ReadonlyArray<TRPCLink<any, RouterOf<TSource>>>,
+>(
+  opts: TypedClientOptions<TSource, TLinks>,
+): EffectClient<RouterOf<TSource>, LinksContext<TLinks>>;
+/**
+ * Creates an Effect client from an explicit router type.
+ *
+ * @example
+ * ```ts
+ * const client = createEffectClient<AppRouter>({ links: [httpLink({ url })] });
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export function createEffectClient<TRouter>(
   opts: TRPCClientOptions,
-): EffectClient<TRouter> {
+): EffectClient<TRouter>;
+export function createEffectClient(opts: TRPCClientOptions): unknown {
   return createRecursiveProxy((path, args) => {
     const method = path.at(-1) as keyof typeof METHODS | undefined;
     const type = method ? METHODS[method] : undefined;
@@ -104,7 +129,10 @@ export function createEffectClient<TRouter>(
         `Call .query(), .mutate() or .subscribe() on a procedure, not ${path.join('.')}()`,
       );
     }
-    const [input, callOpts] = args as [unknown, SubscribeOptions | undefined];
+    const [input, callOpts] = args as [
+      unknown,
+      SubscribeOptions<object> | undefined,
+    ];
     const op = makeOperation(
       type,
       path.slice(0, -1).join('.'),

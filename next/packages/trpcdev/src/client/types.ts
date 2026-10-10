@@ -1,7 +1,12 @@
 import type { BuiltinErrorCode, TRPCError } from '../internal/error.ts';
-import type { Deserialized } from '../internal/types.ts';
+import type { Deserialized, IsAny } from '../internal/types.ts';
 import type { AnyProcedure, Procedure } from '../server/procedure.ts';
-import type { TRPCClientContext } from './link.ts';
+import type {
+  AnyLink,
+  DeclContext,
+  TRPCClientContext,
+  TRPCLink,
+} from './link.ts';
 
 /**
  * A typed (`defined`) error from a procedure's union.
@@ -55,10 +60,10 @@ export interface TRPCSubscription<T, E> extends AsyncIterable<T> {
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface CallOptions {
+export interface CallOptions<TContext extends object = {}> {
   signal?: AbortSignal | undefined;
-  /** Read by links (17 F-B). */
-  context?: TRPCClientContext | undefined;
+  /** Read by links (17 F-B). Typed from the links with `router:`. */
+  context?: (TRPCClientContext & TContext) | undefined;
 }
 
 /**
@@ -66,7 +71,9 @@ export interface CallOptions {
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export interface SubscribeOptions extends CallOptions {
+export interface SubscribeOptions<
+  TContext extends object = {},
+> extends CallOptions<TContext> {
   /** Resume after this `tracked()` event id. */
   lastEventId?: string | undefined;
 }
@@ -81,23 +88,23 @@ export type CallArgs<TInput, TOpts> = undefined extends TInput
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export type DecorateProcedure<P> =
+export type DecorateProcedure<P, TContext extends object = {}> =
   P extends Procedure<infer D>
     ? D['type'] extends 'query'
       ? {
           query(
-            ...args: CallArgs<D['input'], CallOptions>
+            ...args: CallArgs<D['input'], CallOptions<TContext>>
           ): TRPCPromise<Deserialized<D['output']>, ClientError<D['errors']>>;
         }
       : D['type'] extends 'mutation'
         ? {
             mutate(
-              ...args: CallArgs<D['input'], CallOptions>
+              ...args: CallArgs<D['input'], CallOptions<TContext>>
             ): TRPCPromise<Deserialized<D['output']>, ClientError<D['errors']>>;
           }
         : {
             subscribe(
-              ...args: CallArgs<D['input'], SubscribeOptions>
+              ...args: CallArgs<D['input'], SubscribeOptions<TContext>>
             ): TRPCSubscription<
               Deserialized<D['output']>,
               ClientError<D['errors']>
@@ -110,8 +117,91 @@ export type DecorateProcedure<P> =
  * @since 12.0.0-alpha.0
  * @stability experimental
  */
-export type TRPCClient<TRouter> = {
+export type TRPCClient<TRouter, TContext extends object = {}> = {
   [K in keyof TRouter]: TRouter[K] extends AnyProcedure
-    ? DecorateProcedure<TRouter[K]>
-    : TRPCClient<TRouter[K]>;
+    ? DecorateProcedure<TRouter[K], TContext>
+    : TRPCClient<TRouter[K], TContext>;
 };
+
+declare const routerTypeBrand: unique symbol;
+
+/**
+ * A value that carries a router type and nothing else (17 D-C). Made by
+ * {@link routerType}.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface RouterType<TRouter> {
+  readonly [routerTypeBrand]: TRouter;
+}
+
+/**
+ * Carries a router type into `createTRPCClient({ router })` (17 D-C), so
+ * the client also infers what its links declare. Nothing about the router
+ * exists at runtime.
+ *
+ * @example
+ * ```ts
+ * const client = createTRPCClient({
+ *   router: routerType<AppRouter>(),
+ *   links: [dedupeLink(), httpLink({ url })],
+ * });
+ * await client.post.byId.query({ id: '1' }, { context: { dedupe: false } });
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function routerType<TRouter>(): RouterType<TRouter> {
+  return {} as RouterType<TRouter>;
+}
+
+/**
+ * The router a `router:` value describes: a {@link RouterType}, a contract
+ * or a router.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type RouterOf<TSource> =
+  TSource extends RouterType<infer TRouter> ? TRouter : TSource;
+
+type UnionToIntersection<U> = (
+  U extends unknown ? (x: U) => void : never
+) extends (x: infer I) => void
+  ? I
+  : never;
+
+type DeclOf<TLink> =
+  TLink extends TRPCLink<infer D, any>
+    ? IsAny<D> extends true
+      ? never
+      : D
+    : never;
+
+/**
+ * The `context` every link in `TLinks` declares, merged.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type LinksContext<TLinks extends ReadonlyArray<AnyLink>> = [
+  DeclOf<TLinks[number]>,
+] extends [never]
+  ? {}
+  : {
+      [
+        K in keyof UnionToIntersection<DeclContext<DeclOf<TLinks[number]>>>
+      ]: UnionToIntersection<DeclContext<DeclOf<TLinks[number]>>>[K];
+    };
+
+/**
+ * Every procedure path of a router, `'post.byId'`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type RouterPaths<TRouter, TPrefix extends string = ''> =
+  IsAny<TRouter> extends true
+    ? string
+    : {
+        [K in keyof TRouter & string]: TRouter[K] extends AnyProcedure
+          ? `${TPrefix}${K}`
+          : RouterPaths<TRouter[K], `${TPrefix}${K}.`>;
+      }[keyof TRouter & string];

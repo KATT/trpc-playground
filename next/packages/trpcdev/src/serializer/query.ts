@@ -130,7 +130,7 @@ export function fromQueryEntries<T = unknown>(
   if (fallback) return deserializeSync<T>(JSON.parse(fallback[1]), options);
   if (list.length === 0) return undefined as T;
 
-  const root: Record<string, JsonValue> = Object.create(null);
+  const root: Record<string, JsonValue> = {};
   for (const [key, raw] of list) {
     const segments = parseKey(key);
     let container: Record<string, JsonValue> | JsonValue[] = root;
@@ -139,11 +139,7 @@ export function fromQueryEntries<T = unknown>(
       const last = i === segments.length - 1;
       const nextSeg = segments[i + 1];
       const make = (): JsonValue =>
-        last
-          ? decodeLeaf(raw)
-          : nextSeg === '' || isIndex(nextSeg!)
-            ? []
-            : Object.create(null);
+        last ? decodeLeaf(raw) : nextSeg === '' || isIndex(nextSeg!) ? [] : {};
       if (Array.isArray(container)) {
         if (seg !== '' && !isIndex(seg)) {
           throw new DansonError(`Expected array index in ${key}`);
@@ -161,7 +157,7 @@ export function fromQueryEntries<T = unknown>(
         ) {
           throw new DansonError(`Bad key segment in ${key}`);
         }
-        if (last || !(seg in container)) container[seg] = make();
+        if (last || !Object.hasOwn(container, seg)) container[seg] = make();
         if (!last) container = container[seg] as typeof container;
       }
       if (!last && (container === null || typeof container !== 'object')) {

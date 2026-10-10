@@ -240,7 +240,7 @@ export function deserializeSync<T = unknown>(
         d.set(result, inner());
         return result;
       }
-      const result = createObject<unknown>();
+      const result: Record<string, unknown> = {};
       if (ref) cache.set(ref, result);
       for (const [key, v] of Object.entries(value)) {
         if (FORBIDDEN_KEYS.has(key)) {

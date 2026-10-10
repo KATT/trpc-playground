@@ -57,6 +57,7 @@ const router = {
     .input(z.object({ text: z.string() }))
     .query(({ input }) => input.text.length),
   pattern: t.procedure.input(z.unknown()).query(({ input }) => String(input)),
+  raw: t.procedure.input(z.unknown()).query(({ input }) => input),
   greet: t.procedure
     .input(z.object({ name: z.string() }))
     .query(({ input }) => `hello ${input.name}`),
@@ -83,6 +84,7 @@ test('built-in types round-trip through inputs and outputs', async () => {
   expect(result.big).toBe(2n ** 70n);
   expect(result.url).toBeInstanceOf(URL);
   expect('nothing' in result).toBe(true);
+  expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
   expectTypeOf(result.when).toEqualTypeOf<Date>();
   expectTypeOf(result.scores).toEqualTypeOf<Map<string, number>>();
   expectTypeOf(result.big).toEqualTypeOf<bigint>();
@@ -179,6 +181,17 @@ test('bodies above maxBodySize are rejected', async () => {
     body: JSON.stringify({ json: { text: 'x'.repeat(100) } }),
   });
   expect(res.status).toBe(413);
+});
+
+test('query params cannot reach inherited or prototype keys', async () => {
+  await using server = await createTestServer({ router });
+  const inherited = await fetch(`${server.url}/raw?toString[a]=1`);
+  expect(await inherited.json()).toEqual({ json: { toString: { a: 1 } } });
+  for (const key of ['__proto__[x]=1', 'constructor[prototype][x]=1']) {
+    const res = await fetch(`${server.url}/raw?${key}`);
+    expect(res.status).toBe(400);
+  }
+  expect(({} as Record<string, unknown>)['x']).toBeUndefined();
 });
 
 test('malformed JSON is a PARSE_ERROR', async () => {

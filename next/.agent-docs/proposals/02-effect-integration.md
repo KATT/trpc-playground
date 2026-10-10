@@ -112,7 +112,7 @@ export const byIdEffect = t.procedure
 
   ```ts
   // S1: nothing declared; each procedure's R is inferred
-  const t = initTRPC.create<{ ctx: Ctx }>();
+  const t = initTRPC<{ ctx: Ctx }>();
   export const appRouter = {
     post: { byId: byIdEffect }, // R = PostRepo
     mail: { send: sendEffect }, // R = Mailer
@@ -121,13 +121,13 @@ export const byIdEffect = t.procedure
   createHandler({ router: appRouter, layer: PostRepo.layer }); // type error here: Mailer is not provided
   ```
 
-- **S2 — Declared at the root.** `initTRPC.create<{ ctx: Ctx; services: PostRepo | Mailer }>()`. Resolvers may only require declared services (checked where the procedure is defined), and the endpoint must provide `Layer<PostRepo | Mailer>`.
+- **S2 — Declared at the root.** `initTRPC<{ ctx: Ctx; services: PostRepo | Mailer }>()`. Resolvers may only require declared services (checked where the procedure is defined), and the endpoint must provide `Layer<PostRepo | Mailer>`.
   - ✅ Cheap types, explicit wiring, good error locality.
   - ❌ One more thing to declare.
 
   ```ts
   // S2
-  const t = initTRPC.create<{ ctx: Ctx; services: PostRepo | Mailer }>();
+  const t = initTRPC<{ ctx: Ctx; services: PostRepo | Mailer }>();
 
   export const charge = t.procedure.mutation(
     Effect.fn(function* () {

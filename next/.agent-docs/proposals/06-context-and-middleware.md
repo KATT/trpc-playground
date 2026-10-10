@@ -47,7 +47,7 @@ createHandler({
 
 - `createContext` receives the web `Request` and `info` (`{ calls: [{ path, type }], connectionParams, signal }`), plus adapter extras (Node `req`/`res`, Lambda `event`, …) under a typed `adapter` field.
 - It runs once per request (or once per WebSocket connection) and is shared across a batch, as in v11.
-- The root declares the shape (`initTRPC.create<{ ctx: Context }>()`), and the handler checks that `createContext` returns it.
+- The root declares the shape (`initTRPC<{ ctx: Context }>()`), and the handler checks that `createContext` returns it.
 
 ### (b) `next()` arguments
 

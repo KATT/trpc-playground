@@ -195,11 +195,11 @@ createHandler({
 ### (f) Meta
 
 - Keep `.meta(obj)` with **shallow merge** across chained calls.
-- Default meta is set by calling `.meta()` on the base procedure, so `defaultMeta` disappears from `create()`.
+- Default meta is set by calling `.meta()` on the base procedure, so `defaultMeta` disappears (there is no `create()` any more, [0013](../decisions/0013-root-init-option-bag.md)).
 - Meta is available to middleware and resolvers, and through the router definition (for codegen/OpenAPI).
 
 ```ts
-const t = initTRPC.create<{
+const t = initTRPC<{
   ctx: Context;
   meta: { auth?: boolean; role?: 'admin'; rateLimit?: number };
 }>();

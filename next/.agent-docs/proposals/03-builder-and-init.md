@@ -10,7 +10,7 @@ Decide what `initTRPC` looks like, how builder state is typed, and whether the "
 
 **Recommendation:**
 
-- `initTRPC.create<{ ctx; meta }>()` with an option-bag generic.
+- `initTRPC<{ ctx; meta }>()` with an option-bag generic and no `.create()` (decided, [0013](../decisions/0013-root-init-option-bag.md)).
 - One options-bag type parameter for builder state.
 - A **closed** public builder built on an internal generic core.
 - Opt-in callers through wrapper functions.
@@ -43,7 +43,7 @@ t.procedure; // ProcedureBuilder<TContext, TMeta, TContextOverrides, TInputIn, T
 - **I-A — Option-bag generic:**
 
   ```ts
-  const t = initTRPC.create<{
+  const t = initTRPC<{
     ctx: Context;
     meta: Meta;
     services?: Db | Mailer;
@@ -69,6 +69,8 @@ t.procedure; // ProcedureBuilder<TContext, TMeta, TContextOverrides, TInputIn, T
 
 `create()` keeps only definition-time options, such as `defaultMeta` (or that moves to `.meta()` on a base procedure).
 
+- **Decided ([0013](../decisions/0013-root-init-option-bag.md)):** I-A without `.create()`: `const t = initTRPC<{ ctx: Context; meta: Meta }>()`. Definition-time runtime options, if any remain, go in the call: `initTRPC<{ … }>({ … })`. Root extensions are Q3.6.
+
 ```ts
 // v11
 const t = initTRPC
@@ -76,7 +78,7 @@ const t = initTRPC
   .create({ transformer: superjson, errorFormatter, isServer: true });
 
 // vNext: definition-time only; transport options move to the handler
-const t = initTRPC.create<{ ctx: Context; meta: Meta }>();
+const t = initTRPC<{ ctx: Context; meta: Meta }>();
 export const publicProcedure = t.procedure.meta({ auth: false }); // replaces defaultMeta (04 (f))
 createHandler({
   router: appRouter,
@@ -86,7 +88,7 @@ createHandler({
 }); // 11, 12
 ```
 
-Moving transport options out of `create()`:
+Moving transport options out of the root:
 
 | Option              | Moves to |
 | ------------------- | -------- |
@@ -247,7 +249,7 @@ appRouter.post.byId['~trpc'].route; // { method: 'GET', path: '/posts/{id}' }, r
 - `publicProcedure`/`protectedProcedure` remain a user convention; docs show them.
 
 ```ts
-const t = initTRPC.create<{ ctx: Context; meta: Meta }>();
+const t = initTRPC<{ ctx: Context; meta: Meta }>();
 
 const isAuthed = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user) return error({ code: 'UNAUTHORIZED' }); // 07
@@ -264,7 +266,7 @@ export const appRouter = {
 
 ## Recommendation
 
-- **I-A + G-A** (gated on the benchmark in (b)).
+- **I-A** (decided, [0013](../decisions/0013-root-init-option-bag.md)) + **G-A** (gated on the benchmark in (b)).
 - **E-B**: closed builder on an internal generic core, with opt-in wrapper variants.
 - **(d)** as described, with the `'~trpc'` key.
 - If the G-A benchmark loses, keep positional generics internally but expose a `ProcedureDef<…>`-style bag in all public helper types.
@@ -276,12 +278,14 @@ export const appRouter = {
 - **Q3.3** Generic builder: public extension API (E-A), internal core with a closed public builder (E-B), or a standalone package (E-C)?
 - **Q3.4** Rename `_def` to `'~trpc'`?
 - **Q3.5** Keep the `t` object idiom (`t.procedure`, `t.router`, `t.middleware`), or move to top-level imports (`import { procedure } from …`)?
+- **Q3.6** Root extensions that add to the bag from values (ctx, meta keys, errors, services), for example `t.with(openapi())`: in v1, later, or never? Bespoke `$` methods per extension would need E-A's module augmentation; one generic `.with(ext)` on `t` would not. Values can't go in `initTRPC<{ … }>()` itself, because TypeScript has no partial type-argument inference. Not spiked yet.
 
 ## Decision
 
-- **Q3.1:** [ ] I-A · [ ] I-B · [ ] I-C
+- **Q3.1:** [x] I-A, without `.create()` · [ ] I-B · [ ] I-C → [0013](../decisions/0013-root-init-option-bag.md)
 - **Q3.2:** [ ] G-A · [ ] G-B
 - **Q3.3:** [ ] E-A · [ ] E-B · [ ] E-C
 - **Q3.4:** [x] yes · [ ] no → [0001](../decisions/0001-trpc-definition-key.md)
 - **Q3.5:** [ ] keep `t` · [ ] top-level imports · [ ] both
+- **Q3.6:** [ ] v1 · [ ] later · [ ] never
 - **Notes:**

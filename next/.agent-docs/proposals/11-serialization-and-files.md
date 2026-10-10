@@ -144,7 +144,7 @@ Types follow the RPC serializer, which no longer appears on the router. Options:
 
 - **CT-A — RPC types are always "native".** The client sees `Date`, `Map`, nested `Promise`s and so on, because every RPC serializer must be at least as expressive as the built-in one. Plain-JSON consumers (OpenAPI clients) see `Jsonify<Output>`.
 - **CT-B — The serializer becomes a client type parameter**, with a default.
-- **CT-C — The router declares a type-only capability** (`initTRPC.create<{ ctx; serializer: 'json' }>()`), and endpoints are checked against it.
+- **CT-C — The router declares a type-only capability** (`initTRPC<{ ctx; serializer: 'json' }>()`), and endpoints are checked against it.
 
 ```ts
 // CT-A
@@ -157,7 +157,7 @@ createTRPCClient<AppRouter>({ links }); // createdAt: Date (default)
 createTRPCClient<AppRouter, { serializer: 'json' }>({ links }); // createdAt: string; shape TBD
 
 // CT-C
-const t = initTRPC.create<{ ctx: Context; serializer: 'json' }>();
+const t = initTRPC<{ ctx: Context; serializer: 'json' }>();
 // every client of this router sees createdAt: string
 createHandler({ router: appRouter, serializer: appSerializer }); // checked against 'json'
 ```

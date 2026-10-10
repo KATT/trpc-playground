@@ -21,3 +21,5 @@ export {
   type BatchCall,
   type BatchLine,
 } from './protocol.ts';
+export { flattenRouter, inputJSONSchema, procedureJSON } from './describe.ts';
+export { toJSONSchema, type JSONSchema } from './json-schema.ts';

@@ -1,0 +1,103 @@
+import { Context, Effect, ManagedRuntime, type Exit, type Layer } from 'effect';
+import { TRPCError, type AnyTRPCError } from '../internal/error.ts';
+import type { MaybePromise, ProcedureType } from '../internal/types.ts';
+import { callProcedure, isUnexpectedError } from './execute.ts';
+import type { CreateContextOpts, OnErrorOpts } from './fetch.ts';
+import type { ResponseHandle } from './middleware.ts';
+import type { AnyProcedure } from './procedure.ts';
+import type { Transport } from './socket.ts';
+
+/** @internal */
+export interface CoreOptions {
+  createContext?: (opts: CreateContextOpts) => MaybePromise<object>;
+  layer?: Layer.Layer<any, any, never>;
+  exposeUnexpectedErrors?: boolean;
+  onError?: (opts: OnErrorOpts) => void;
+}
+
+/** @internal */
+export interface RunOpts {
+  procedure: AnyProcedure;
+  path: string;
+  ctx: object;
+  input: unknown;
+  signal: AbortSignal;
+  response: ResponseHandle;
+  lastEventId?: string | undefined;
+}
+
+/** @internal */
+export interface MakeContextOpts {
+  request: Request;
+  calls: ReadonlyArray<{ path: string; type: ProcedureType }>;
+  signal?: AbortSignal;
+  transport?: Transport;
+  connectionParams?: Record<string, unknown> | undefined;
+}
+
+/** What every handler shares: ctx, services, masking and `onError`. @internal */
+export interface HandlerCore {
+  readonly run: (opts: RunOpts) => Promise<Exit.Exit<unknown, AnyTRPCError>>;
+  readonly makeContext: (opts: MakeContextOpts) => Promise<object>;
+  /** Masks unexpected errors unless `exposeUnexpectedErrors` (0003). */
+  readonly publicError: (err: AnyTRPCError) => AnyTRPCError;
+  readonly report: (
+    err: AnyTRPCError,
+    request: Request,
+    path?: string,
+    type?: ProcedureType,
+  ) => void;
+  readonly dispose: () => Promise<void>;
+}
+
+const isDev = () => {
+  const env = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env?.['NODE_ENV'];
+  return env === 'development' || env === 'test';
+};
+
+/** @internal */
+export function createHandlerCore(opts: CoreOptions): HandlerCore {
+  const expose = opts.exposeUnexpectedErrors ?? isDev();
+  const runtime = opts.layer ? ManagedRuntime.make(opts.layer) : undefined;
+  let services: Promise<Context.Context<any>> | undefined;
+  const getServices = () =>
+    (services ??= runtime
+      ? runtime.context()
+      : Promise.resolve(Context.empty() as Context.Context<any>));
+
+  return {
+    run: async (o) => {
+      const context = await getServices();
+      return Effect.runPromiseExitWith(context)(callProcedure(o), {
+        signal: o.signal,
+      });
+    },
+    makeContext: async (o) => {
+      if (!opts.createContext) return {};
+      return await opts.createContext({
+        request: o.request,
+        info: {
+          calls: o.calls,
+          signal: o.signal ?? o.request.signal,
+          transport: o.transport ?? 'http',
+          connectionParams: o.connectionParams,
+        },
+      });
+    },
+    publicError: (err) =>
+      isUnexpectedError(err) && !expose
+        ? new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Internal server error',
+          })
+        : err,
+    report: (error, request, path, type) => {
+      opts.onError?.({ error, path, type, request });
+    },
+    dispose: async () => {
+      await runtime?.dispose();
+    },
+  };
+}

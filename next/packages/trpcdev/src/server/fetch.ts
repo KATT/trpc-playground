@@ -1,11 +1,4 @@
-import {
-  Context,
-  Effect,
-  Exit,
-  ManagedRuntime,
-  Stream,
-  type Layer,
-} from 'effect';
+import { Effect, Exit, Stream, type Layer } from 'effect';
 import {
   isTRPCError,
   toWireError,
@@ -24,10 +17,9 @@ import {
 import type { MaybePromise, ProcedureType } from '../internal/types.ts';
 import { defaultSerializer, type Serializer } from '../serializer/index.ts';
 import type { Chunk } from '../serializer/stream.ts';
+import { createHandlerCore } from './core.ts';
 import {
-  callProcedure,
   createResponseHandle,
-  isUnexpectedError,
   normalizeCause,
   unexpectedError,
 } from './execute.ts';
@@ -182,12 +174,6 @@ export interface FetchHandler {
 }
 
 const encoder = new TextEncoder();
-const isDev = () => {
-  const env = (
-    globalThis as { process?: { env?: Record<string, string | undefined> } }
-  ).process?.env?.['NODE_ENV'];
-  return env === 'development' || env === 'test';
-};
 
 const protocolError = (code: string, message: string) =>
   new TRPCError({ code, message });
@@ -220,14 +206,16 @@ export function createFetchHandler<TRouter extends AnyRouter>(
   opts: FetchHandlerOptions<TRouter>,
 ): FetchHandler {
   const { router } = opts;
-  const createContext = (
-    opts as { createContext?: (o: CreateContextOpts) => MaybePromise<object> }
-  ).createContext;
-  const layer = (opts as { layer?: Layer.Layer<any, any, never> }).layer;
+  const base = createHandlerCore(
+    opts as typeof opts & {
+      createContext?: (o: CreateContextOpts) => MaybePromise<object>;
+      layer?: Layer.Layer<any, any, never>;
+    },
+  );
+  const { publicError, report } = base;
   const serializer = opts.serializer ?? defaultSerializer;
   const endpoint = `/${(opts.endpoint ?? '/trpc').replace(/^\/+|\/+$/g, '')}`;
   const maxBodySize = opts.maxBodySize ?? 1_048_576;
-  const expose = opts.exposeUnexpectedErrors ?? isDev();
   const batch =
     opts.batch === true
       ? { maxItems: 20 }
@@ -235,20 +223,6 @@ export function createFetchHandler<TRouter extends AnyRouter>(
         ? { maxItems: opts.batch.maxItems ?? 20 }
         : undefined;
 
-  const runtime = layer ? ManagedRuntime.make(layer) : undefined;
-  let services: Promise<Context.Context<any>> | undefined;
-  const getServices = () =>
-    (services ??= runtime
-      ? runtime.context()
-      : Promise.resolve(Context.empty() as Context.Context<any>));
-
-  const publicError = (err: AnyTRPCError) =>
-    isUnexpectedError(err) && !expose
-      ? new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'Internal server error',
-        })
-      : err;
   const wire = (err: AnyTRPCError) =>
     serializer.serialize(toWireError(publicError(err)));
 
@@ -324,34 +298,12 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     return deserializeInput(await readBody(request));
   }
 
-  async function makeContext(
+  const makeContext = (
     request: Request,
     calls: CreateContextOpts['info']['calls'],
-    info: Partial<CreateContextOpts['info']> = {},
-  ): Promise<object> {
-    if (!createContext) return {};
-    return await createContext({
-      request,
-      info: {
-        calls,
-        signal: request.signal,
-        transport: 'http',
-        connectionParams: undefined,
-        ...info,
-      },
-    });
-  }
+  ) => base.makeContext({ request, calls });
 
-  function report(
-    error: AnyTRPCError,
-    request: Request,
-    path?: string,
-    type?: ProcedureType,
-  ) {
-    opts.onError?.({ error, path, type, request });
-  }
-
-  async function run(
+  const run = (
     procedure: AnyProcedure,
     path: string,
     ctx: object,
@@ -359,21 +311,7 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     signal: AbortSignal,
     response: ResponseHandle,
     lastEventId?: string,
-  ): Promise<Exit.Exit<unknown, AnyTRPCError>> {
-    const context = await getServices();
-    return Effect.runPromiseExitWith(context)(
-      callProcedure({
-        procedure,
-        path,
-        ctx,
-        input,
-        signal,
-        response,
-        lastEventId,
-      }),
-      { signal },
-    );
-  }
+  ) => base.run({ procedure, path, ctx, input, signal, response, lastEventId });
 
   /** Runs a query or mutation and serializes the outcome. */
   async function execute(
@@ -705,22 +643,8 @@ export function createFetchHandler<TRouter extends AnyRouter>(
   const core: SocketCore = {
     router,
     serializer,
-    run: (o) =>
-      run(
-        o.procedure,
-        o.path,
-        o.ctx,
-        o.input,
-        o.signal,
-        o.response,
-        o.lastEventId,
-      ),
-    makeContext: (o) =>
-      makeContext(o.request, o.calls, {
-        signal: o.signal,
-        transport: o.transport,
-        connectionParams: o.connectionParams,
-      }),
+    run: base.run,
+    makeContext: base.makeContext,
     deserializeInput,
     publicError,
     report,
@@ -770,8 +694,6 @@ export function createFetchHandler<TRouter extends AnyRouter>(
         );
       }
     },
-    async dispose() {
-      await runtime?.dispose();
-    },
+    dispose: base.dispose,
   };
 }

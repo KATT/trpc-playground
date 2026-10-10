@@ -58,6 +58,18 @@ export type {
   SubscriptionResolverOpts,
   With,
 } from './builder.ts';
+export type {
+  ExactRouter,
+  ImplementedProcedure,
+  ImplementedRouter,
+  Implementer,
+  ImplementerDef,
+  ImplementerMethods,
+  ImplementRouter,
+  ImplementResult,
+  ProcedureImplementer,
+  UndeclaredCheck,
+} from './implement.ts';
 export {
   middleware,
   ok,

@@ -1,6 +1,8 @@
+import type { AnyContractRouter } from '../contract/index.ts';
 import type { AnyTRPCError } from '../internal/error.ts';
 import type { Unset } from '../internal/types.ts';
 import { createBuilder, type ProcedureBuilder } from './builder.ts';
+import { implement, type ImplementResult } from './implement.ts';
 import {
   makeEffectMiddleware,
   type EffectMiddlewareFactory,
@@ -71,6 +73,29 @@ export interface TRPCRoot<TCtx extends object, TMeta extends object> {
    * ```
    */
   middleware: RootMiddleware<TCtx, TMeta>;
+  /**
+   * Implements a contract (09): a mirror of the contract whose leaves are
+   * builders pre-loaded with the contract's input, output, errors and route.
+   * Leaves only offer `.use()`, `.provide()` and the contract's terminal, and
+   * may only return errors the contract declares. `impl.router()` checks
+   * completeness.
+   *
+   * @example
+   * ```ts
+   * const impl = t.implement(appContract);
+   * export const appRouter = impl.router({
+   *   post: {
+   *     byId: impl.post.byId.use(authed).query(async ({ input, errors }) =>
+   *       (await db.post.find(input.id)) ?? errors.NOT_FOUND({ data: { id: input.id } }),
+   *     ),
+   *     create: impl.post.create.mutation(({ input }) => db.post.create(input)),
+   *   },
+   * });
+   * ```
+   */
+  implement<TContract extends AnyContractRouter>(
+    contract: TContract,
+  ): ImplementResult<RootDef<TCtx, TMeta>, TContract>;
 }
 
 /**
@@ -125,16 +150,19 @@ export function initTRPC<TConfig extends RootConfig = {}>(
   TConfig['ctx'] extends object ? TConfig['ctx'] : {},
   TConfig['meta'] extends object ? TConfig['meta'] : {}
 > {
+  const procedure = createBuilder({
+    steps: [],
+    meta: opts.defaultMeta ?? {},
+    output: undefined,
+    errors: {},
+    route: undefined,
+  });
   return {
-    procedure: createBuilder({
-      steps: [],
-      meta: opts.defaultMeta ?? {},
-      output: undefined,
-      errors: {},
-      route: undefined,
-    }),
+    procedure,
     middleware: Object.assign((fn: unknown) => fn, {
       effect: () => makeEffectMiddleware,
     }) as never,
+    implement: (contract: AnyContractRouter) =>
+      implement(procedure['~trpc'], contract) as never,
   };
 }

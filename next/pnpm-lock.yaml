@@ -185,7 +185,13 @@ importers:
       trpcdev:
         specifier: workspace:*
         version: link:../../packages/trpcdev
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
     devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -273,10 +279,19 @@ importers:
 
   test/portability:
     dependencies:
+      effect:
+        specifier: 4.0.2
+        version: 4.0.2
       trpcdev:
         specifier: workspace:*
         version: link:../../packages/trpcdev
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
     devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.1
       typescript:
         specifier: ^7.0.2
         version: 7.0.2

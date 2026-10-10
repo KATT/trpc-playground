@@ -3,12 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "trpcdev": "workspace:*"
+    "effect": "4.0.2",
+    "trpcdev": "workspace:*",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "typescript": "^7.0.2"
   }
 }

@@ -16,3 +16,4 @@ Generated fixtures and build output (`generated/`, `dist/`) are gitignored; the 
 | `contracts/`           | `pnpm test` (root), `node contracts/bench.ts [n] [runs]`       | [contracts-and-routers-typing](../.agent-docs/notes/contracts-and-routers-typing.md) |
 | `tanstack-options/`    | `pnpm test` (root)                                             | [tanstack-options-typing](../.agent-docs/notes/tanstack-options-typing.md)           |
 | `context-aware-input/` | `pnpm test` (root), `node context-aware-input/bench.ts [n]`    | [context-aware-inputs](../.agent-docs/notes/context-aware-inputs.md)                 |
+| `concat-plugins/`      | `pnpm test` (root)                                             | [concat-plugins](../.agent-docs/notes/concat-plugins.md)                             |

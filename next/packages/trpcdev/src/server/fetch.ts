@@ -17,6 +17,7 @@ import {
   HEADER,
   isJsonContentType,
   PROTOCOL_VERSION,
+  SSE_EVENT,
   type BatchCall,
   type BatchLine,
 } from '../internal/protocol.ts';
@@ -30,6 +31,7 @@ import {
   normalizeCause,
   unexpectedError,
 } from './execute.ts';
+import { emitEvents } from './events.ts';
 import type { ResponseHandle } from './middleware.ts';
 import type { AnyProcedure } from './procedure.ts';
 import {
@@ -38,7 +40,15 @@ import {
   type inferRouterContext,
   type inferRouterServices,
 } from './router.ts';
-import { isTracked } from './tracked.ts';
+import {
+  messagePortConnection,
+  serveConnection,
+  webSocketConnection,
+  type MessagePortLike,
+  type SocketCore,
+  type Transport,
+  type WebSocketLike,
+} from './socket.ts';
 
 /**
  * What `createContext` receives.
@@ -46,11 +56,19 @@ import { isTracked } from './tracked.ts';
  * @stability experimental
  */
 export interface CreateContextOpts {
+  /**
+   * The HTTP request, or the upgrade request of a WebSocket. For a
+   * MessagePort, the `request` passed to `handler.messagePort()`, or a
+   * placeholder `http://localhost/` request.
+   */
   readonly request: Request;
   readonly info: {
     /** Every call in the request: one, or several for a batch. */
     readonly calls: ReadonlyArray<{ path: string; type: ProcedureType }>;
     readonly signal: AbortSignal;
+    readonly transport: Transport;
+    /** What a WebSocket or MessagePort client sent as `connectionParams`. */
+    readonly connectionParams: Record<string, unknown> | undefined;
   };
 }
 
@@ -133,6 +151,32 @@ export type FetchHandlerOptions<TRouter extends AnyRouter> =
  */
 export interface FetchHandler {
   fetch(request: Request): Promise<Response>;
+  /**
+   * Serves calls over an accepted WebSocket (10, 12). `request` is the
+   * upgrade request; `createContext` receives it.
+   *
+   * @example
+   * ```ts
+   * // Deno
+   * Deno.serve((request) => {
+   *   if (request.headers.get('upgrade') !== 'websocket') return handler.fetch(request);
+   *   const { socket, response } = Deno.upgradeWebSocket(request);
+   *   handler.websocket(socket, { request });
+   *   return response;
+   * });
+   * ```
+   */
+  websocket(socket: WebSocketLike, opts: { request: Request }): void;
+  /**
+   * Serves calls over a `MessagePort`, `Worker` or `worker_threads` port.
+   *
+   * @example
+   * ```ts
+   * // in a worker
+   * handler.messagePort(parentPort);
+   * ```
+   */
+  messagePort(port: MessagePortLike, opts?: { request?: Request }): void;
   /** Releases the `layer`'s resources. */
   dispose(): Promise<void>;
 }
@@ -283,11 +327,18 @@ export function createFetchHandler<TRouter extends AnyRouter>(
   async function makeContext(
     request: Request,
     calls: CreateContextOpts['info']['calls'],
+    info: Partial<CreateContextOpts['info']> = {},
   ): Promise<object> {
     if (!createContext) return {};
     return await createContext({
       request,
-      info: { calls, signal: request.signal },
+      info: {
+        calls,
+        signal: request.signal,
+        transport: 'http',
+        connectionParams: undefined,
+        ...info,
+      },
     });
   }
 
@@ -509,17 +560,33 @@ export function createFetchHandler<TRouter extends AnyRouter>(
       );
     }
     const events = exit.value as Stream.Stream<unknown, AnyTRPCError>;
+    const coerceError = (cause: unknown) => {
+      const err = isTRPCError(cause) ? cause : unexpectedError(cause);
+      report(err, request, path, 'subscription');
+      return toWireError(publicError(err));
+    };
     return linesResponse(
       async (write) => {
         const done = await Effect.runPromiseExit(
-          Stream.runForEach(events, (event) =>
-            Effect.sync(() => {
-              const id = isTracked(event) ? `id: ${event.id}\n` : '';
+          emitEvents(events, serializer, coerceError, (frame) => {
+            if (frame.kind === 'event') {
+              const id =
+                frame.eventId === undefined ? '' : `id: ${frame.eventId}\n`;
               write(
-                `${id}data: ${JSON.stringify(serializer.serialize(event))}\n\n`,
+                frame.deferred === undefined
+                  ? `${id}data: ${JSON.stringify(frame.body)}\n\n`
+                  : `${id}event: ${SSE_EVENT.deferred}\ndata: ${JSON.stringify({ e: frame.deferred, body: frame.body })}\n\n`,
               );
-            }),
-          ),
+            } else {
+              write(
+                `event: ${SSE_EVENT.chunk}\ndata: ${JSON.stringify(
+                  frame.kind === 'chunk'
+                    ? { e: frame.event, chunk: frame.chunk }
+                    : { e: frame.event },
+                )}\n\n`,
+              );
+            }
+          }),
           { signal: controller.signal },
         );
         if (controller.signal.aborted) return;
@@ -635,7 +702,43 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     );
   }
 
+  const core: SocketCore = {
+    router,
+    serializer,
+    run: (o) =>
+      run(
+        o.procedure,
+        o.path,
+        o.ctx,
+        o.input,
+        o.signal,
+        o.response,
+        o.lastEventId,
+      ),
+    makeContext: (o) =>
+      makeContext(o.request, o.calls, {
+        signal: o.signal,
+        transport: o.transport,
+        connectionParams: o.connectionParams,
+      }),
+    deserializeInput,
+    publicError,
+    report,
+  };
+
   return {
+    websocket(socket, o) {
+      serveConnection(core, webSocketConnection(socket), {
+        request: o.request,
+        transport: 'websocket',
+      });
+    },
+    messagePort(port, o) {
+      serveConnection(core, messagePortConnection(port), {
+        request: o?.request ?? new Request('http://localhost/'),
+        transport: 'messagePort',
+      });
+    },
     async fetch(request) {
       const url = new URL(request.url);
       try {

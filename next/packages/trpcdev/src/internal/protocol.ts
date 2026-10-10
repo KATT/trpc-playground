@@ -1,3 +1,5 @@
+import type { ProcedureType } from './types.ts';
+
 /** The wire protocol version this build speaks. */
 export const PROTOCOL_VERSION = '1';
 
@@ -23,6 +25,56 @@ export interface BatchCall {
 export type BatchLine =
   | { i: number; status: number; body: unknown }
   | { i: number; chunk: unknown };
+
+/**
+ * SSE event names. A subscription event with deferred values (`Promise`s,
+ * `AsyncIterable`s) is sent as a `deferred` event carrying `{ e, body }`;
+ * its chunks follow as `chunk` events carrying `{ e, chunk }`, then
+ * `{ e }` once that event's deferred values have all settled.
+ */
+export const SSE_EVENT = {
+  message: 'message',
+  deferred: 'deferred',
+  chunk: 'chunk',
+  error: 'error',
+  done: 'done',
+} as const;
+
+/** What a WebSocket or MessagePort client sends (10). */
+export type ClientMessage =
+  | {
+      type: 'init';
+      version: string;
+      connectionParams?: Record<string, unknown> | undefined;
+    }
+  | {
+      id: number;
+      type: 'request';
+      method: ProcedureType;
+      path: string;
+      input?: unknown;
+      lastEventId?: string | undefined;
+    }
+  | { id: number; type: 'abort' };
+
+/**
+ * What a WebSocket or MessagePort server sends (10). A `result` or `event`
+ * with `deferred` is followed by its `chunk`s. A query with deferred values,
+ * and every subscription, ends with `done`. `id: null` is a connection error.
+ */
+export type ServerMessage =
+  | { id: number; type: 'result'; body: unknown; deferred?: true }
+  | {
+      id: number;
+      type: 'event';
+      body: unknown;
+      eventId?: string;
+      deferred?: number;
+    }
+  | { id: number; type: 'chunk'; event?: number; chunk: unknown }
+  | { id: number; type: 'chunkEnd'; event: number }
+  | { id: number; type: 'done' }
+  | { id: number | null; type: 'error'; status: number; body: unknown };
 
 export const isJsonContentType = (value: string | null): boolean =>
   value !== null && /^application\/json\b/i.test(value);

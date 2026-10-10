@@ -121,6 +121,7 @@ export {
   type FetchHandlerOptions,
   type OnErrorOpts,
 } from './fetch.ts';
+export type { MessagePortLike, Transport, WebSocketLike } from './socket.ts';
 export {
   call,
   createRouterClient,

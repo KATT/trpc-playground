@@ -6,7 +6,16 @@
  * @see ../../.agent-docs/proposals/01-packages-and-type-portability.md
  */
 import { Context, Effect, Layer, Schema, Stream } from 'effect';
-import { createTRPCClient, httpLink, link, localLink } from 'trpcdev/client';
+import {
+  createTRPCClient,
+  dedupeLink,
+  httpLink,
+  link,
+  localLink,
+  routerType,
+  splitLink,
+  wsLink,
+} from 'trpcdev/client';
 import { createEffectClient } from 'trpcdev/effect';
 import {
   createFetchHandler,
@@ -148,6 +157,30 @@ export const localClient = createTRPCClient<AppRouter>({
 
 export const effectClient = createEffectClient<AppRouter>({
   links: [httpLink({ url: '/trpc' })],
+});
+
+export const traceLink = link<{ context: { traceId?: string } }>(
+  async ({ op, next }) => next(op),
+);
+
+export const socket = wsLink({ url: 'ws://localhost/trpc' });
+
+export const typedClient = createTRPCClient({
+  router: routerType<AppRouter>(),
+  links: [
+    traceLink,
+    dedupeLink(),
+    splitLink<AppRouter>({
+      condition: (op) => op.type === 'subscription',
+      true: socket,
+      false: httpLink({ url: '/trpc' }),
+    }),
+  ],
+});
+
+export const typedEffectClient = createEffectClient({
+  router: routerType<AppRouter>(),
+  links: [traceLink, httpLink({ url: '/trpc' })],
 });
 
 export const caller = createRouterClient(appRouter, {

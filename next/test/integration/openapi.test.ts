@@ -1,0 +1,632 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { Context, Effect, Layer, Schema } from 'effect';
+import { createTRPCClient, httpLink, routerType, safe } from 'trpcdev/client';
+import { toContract } from 'trpcdev/contract';
+import { toNodeListener } from 'trpcdev/node';
+import {
+  createOpenAPIHandler,
+  generateOpenAPI,
+  openAPILink,
+  openAPIReference,
+  parseBracketNotation,
+  toBracketNotation,
+  type OpenAPIErrorBody,
+} from 'trpcdev/openapi';
+import {
+  createFetchHandler,
+  initTRPC,
+  tracked,
+  type TrackedEnvelope,
+} from 'trpcdev/server';
+import { expect, expectTypeOf, test } from 'vite-plus/test';
+import { z } from 'zod';
+import { appContract } from './fixtures/contract.ts';
+
+interface Ctx {
+  user: string | null;
+}
+const t = initTRPC<{ ctx: Ctx }>();
+
+class Clock extends Context.Service<Clock, { now: () => number }>()('Clock') {}
+
+const Post = z.object({ id: z.string(), title: z.string() });
+const posts = new Map([
+  ['1', { id: '1', title: 'Hello' }],
+  ['2', { id: '2', title: 'World' }],
+]);
+
+const router = {
+  health: t.procedure.query(() => 'ok' as const),
+  post: {
+    byId: t.procedure
+      .route({
+        method: 'GET',
+        path: '/posts/{id}',
+        tags: ['posts'],
+        summary: 'Get a post',
+      })
+      .input(z.object({ id: z.string() }))
+      .output(Post)
+      .errors({ NOT_FOUND: { data: z.object({ id: z.string() }) } })
+      .query(
+        ({ input, errors }) =>
+          posts.get(input.id) ?? errors.NOT_FOUND({ data: { id: input.id } }),
+      ),
+    latest: t.procedure
+      .route({ method: 'GET', path: '/posts/latest' })
+      .output(Post)
+      .query(() => posts.get(String(posts.size))!),
+    list: t.procedure
+      .route({ method: 'GET', path: '/posts' })
+      .input(
+        z.object({
+          limit: z.number().int().max(50),
+          tags: z.array(z.string()).optional(),
+          author: z.object({ name: z.string() }).optional(),
+          published: z.boolean().optional(),
+        }),
+      )
+      .query(({ input }) => input),
+    create: t.procedure
+      .route({ method: 'POST', path: '/posts', successStatus: 201 })
+      .input(z.object({ title: z.string().min(1) }))
+      .output(Post)
+      .errors({ UNAUTHORIZED: {} })
+      .mutation(({ input, ctx, errors }) => {
+        if (!ctx.user) return errors.UNAUTHORIZED();
+        const post = { id: String(posts.size + 1), title: input.title };
+        posts.set(post.id, post);
+        return post;
+      }),
+    update: t.procedure
+      .route({
+        method: 'PATCH',
+        path: '/posts/{id}',
+        inputStructure: 'detailed',
+        outputStructure: 'detailed',
+      })
+      .input(
+        z.object({
+          params: z.object({ id: z.string() }),
+          query: z.object({ notify: z.boolean().optional() }),
+          headers: z.object({ 'if-match': z.string() }),
+          body: z.object({ title: z.string() }),
+        }),
+      )
+      .mutation(({ input }) => ({
+        status: 200,
+        headers: { etag: `${input.headers['if-match']}+1` },
+        body: {
+          id: input.params.id,
+          title: input.body.title,
+          notified: input.query.notify ?? false,
+        },
+      })),
+    remove: t.procedure
+      .route({ method: 'DELETE', path: '/posts/{id}' })
+      .input(z.object({ id: z.string() }))
+      .mutation(({ input, response }) => {
+        posts.delete(input.id);
+        response.status = 204;
+      }),
+    onAdd: t.procedure.output(Post).subscription(async function* ({
+      lastEventId,
+    }) {
+      for (let id = Number(lastEventId ?? 0) + 1; id <= 3; id++) {
+        yield tracked(String(id), { id: String(id), title: `Post ${id}` });
+      }
+    }),
+    upload: t.procedure
+      .route({ method: 'POST', path: '/files' })
+      .input(z.object({ name: z.string(), file: z.instanceof(File) }))
+      .mutation(async ({ input }) => ({
+        name: input.name,
+        size: input.file.size,
+        text: await input.file.text(),
+      })),
+  },
+  stats: t.procedure
+    .route({ method: 'GET', path: '/stats' })
+    .input(Schema.Struct({ days: Schema.Number }))
+    .query(({ input }) =>
+      Effect.gen(function* () {
+        const clock = yield* Clock;
+        return { days: input.days, at: clock.now() };
+      }),
+    ),
+  boom: t.procedure.query(() => {
+    throw new Error('secret detail');
+  }),
+};
+
+const layer = Layer.succeed(Clock, { now: () => 42 });
+
+async function serve(opts: { expose?: boolean } = {}) {
+  const createContext = ({ request }: { request: Request }) => ({
+    user: request.headers.get('x-user'),
+  });
+  const rpc = createFetchHandler({ router, createContext, layer });
+  const openapi = createOpenAPIHandler({
+    router,
+    createContext,
+    layer,
+    exposeUnexpectedErrors: opts.expose ?? true,
+    plugins: [
+      openAPIReference({
+        specGenerateOptions: { info: { title: 'Posts API', version: '1.0.0' } },
+      }),
+      openAPIReference({
+        path: '/swagger',
+        specPath: '/swagger.json',
+        docsProvider: 'swagger',
+        specGenerateOptions: { info: { title: 'Posts API', version: '1.0.0' } },
+      }),
+    ],
+  });
+  const server = createServer(
+    toNodeListener({
+      fetch: (request) =>
+        new URL(request.url).pathname.startsWith('/trpc')
+          ? rpc.fetch(request)
+          : openapi.fetch(request),
+    }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return {
+    origin,
+    api: (path: string, init?: RequestInit) =>
+      fetch(`${origin}/api${path}`, init),
+    async [Symbol.asyncDispose]() {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      await Promise.all([rpc.dispose(), openapi.dispose()]);
+    },
+  };
+}
+
+test('procedures answer at their routes, with path params and declared errors (18 O-A)', async () => {
+  await using s = await serve();
+  const ok = await s.api('/posts/1');
+  expect(ok.status).toBe(200);
+  expect(await ok.json()).toEqual({ id: '1', title: 'Hello' });
+
+  expect(await (await s.api('/posts/latest')).json()).toMatchObject({
+    id: String(posts.size),
+  });
+
+  const missing = await s.api('/posts/nope');
+  expect(missing.status).toBe(404);
+  expect(await missing.json()).toEqual({
+    defined: true,
+    code: 'NOT_FOUND',
+    status: 404,
+    message: 'NOT_FOUND',
+    data: { id: 'nope' },
+  } satisfies OpenAPIErrorBody);
+
+  expect(await (await s.api('/health')).json()).toBe('ok');
+  expect((await s.api('/posts/1', { method: 'PUT' })).status).toBe(405);
+  expect((await s.api('/nowhere')).status).toBe(404);
+});
+
+test('query strings use bracket notation, coerced from the JSON Schema', async () => {
+  await using s = await serve();
+  const res = await s.api(
+    '/posts?limit=5&tags[]=a&tags[]=b&author[name]=alex&published=true',
+  );
+  expect(await res.json()).toEqual({
+    limit: 5,
+    tags: ['a', 'b'],
+    author: { name: 'alex' },
+    published: true,
+  });
+
+  const repeated = await s.api('/posts?limit=1&tags=x&tags=y');
+  expect(await repeated.json()).toEqual({ limit: 1, tags: ['x', 'y'] });
+
+  const single = await s.api('/posts?limit=1&tags=only');
+  expect(await single.json()).toEqual({ limit: 1, tags: ['only'] });
+
+  const invalid = await s.api('/posts?limit=500');
+  expect(invalid.status).toBe(400);
+  expect(await invalid.json()).toMatchObject({
+    defined: true,
+    code: 'BAD_REQUEST',
+    data: { issues: [{ path: ['limit'] }] },
+  });
+
+  const effect = await s.api('/stats?days=7');
+  expect(await effect.json()).toEqual({ days: 7, at: 42 });
+});
+
+test('bodies: JSON, forms and files; status from .route() and the response handle', async () => {
+  await using s = await serve();
+  const created = await s.api('/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-user': 'alex' },
+    body: JSON.stringify({ title: 'New' }),
+  });
+  expect(created.status).toBe(201);
+  const post = (await created.json()) as { id: string };
+  expect(post).toMatchObject({ title: 'New' });
+
+  const unauthorized = await s.api('/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'New' }),
+  });
+  expect(unauthorized.status).toBe(401);
+
+  const form = await s.api('/posts', {
+    method: 'POST',
+    headers: { 'x-user': 'alex' },
+    body: new URLSearchParams({ title: 'From a form' }),
+  });
+  expect(await form.json()).toMatchObject({ title: 'From a form' });
+
+  const files = new FormData();
+  files.append('name', 'notes');
+  files.append('file', new File(['hello'], 'notes.txt'));
+  const uploaded = await s.api('/files', { method: 'POST', body: files });
+  expect(await uploaded.json()).toEqual({
+    name: 'notes',
+    size: 5,
+    text: 'hello',
+  });
+
+  const removed = await s.api(`/posts/${post.id}`, { method: 'DELETE' });
+  expect(removed.status).toBe(204);
+  expect(await removed.text()).toBe('');
+
+  const text = await s.api('/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain' },
+    body: 'hi',
+  });
+  expect(text.status).toBe(415);
+});
+
+test('detailed input and output structures', async () => {
+  await using s = await serve();
+  const res = await s.api('/posts/7?notify=true', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'if-match': 'v1' },
+    body: JSON.stringify({ title: 'Edited' }),
+  });
+  expect(res.status).toBe(200);
+  expect(res.headers.get('etag')).toBe('v1+1');
+  expect(await res.json()).toEqual({
+    id: '7',
+    title: 'Edited',
+    notified: true,
+  });
+
+  const missingHeader = await s.api('/posts/7', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Edited' }),
+  });
+  expect(missingHeader.status).toBe(400);
+});
+
+test('subscriptions are text/event-stream and resume from Last-Event-ID', async () => {
+  await using s = await serve();
+  const res = await s.api('/post/onAdd', { headers: { 'last-event-id': '1' } });
+  expect(res.headers.get('content-type')).toBe('text/event-stream');
+  const body = await res.text();
+  expect(body).toContain(
+    'id: 2\nevent: message\ndata: {"id":"2","title":"Post 2"}',
+  );
+  expect(body).toContain('id: 3\n');
+  expect(body).not.toContain('id: 1\n');
+  expect(body).toContain('event: done');
+});
+
+test('unexpected errors are masked unless exposed (0003)', async () => {
+  await using masked = await serve({ expose: false });
+  const res = await masked.api('/boom');
+  expect(res.status).toBe(500);
+  expect(await res.json()).toMatchObject({
+    defined: false,
+    message: 'Internal server error',
+  });
+});
+
+test('the same router serves RPC and REST at once', async () => {
+  await using s = await serve();
+  const rpc = createTRPCClient({
+    router: routerType<typeof router>(),
+    links: [httpLink({ url: `${s.origin}/trpc` })],
+  });
+  expect(await rpc.post.byId.query({ id: '1' })).toEqual({
+    id: '1',
+    title: 'Hello',
+  });
+  expect(await (await s.api('/posts/1')).json()).toEqual({
+    id: '1',
+    title: 'Hello',
+  });
+});
+
+test('openAPILink calls the REST endpoints from a JSON contract (18 (d))', async () => {
+  await using s = await serve();
+  const contract = JSON.parse(JSON.stringify(toContract(router))) as ReturnType<
+    typeof toContract<typeof router>
+  >;
+  const requests: string[] = [];
+  const client = createTRPCClient({
+    router: contract,
+    links: [
+      openAPILink({
+        url: s.origin,
+        contract,
+        headers: { 'x-user': 'alex' },
+        fetch: (input, init) => {
+          requests.push(
+            `${init?.method} ${(input instanceof Request ? input.url : String(input as string | URL)).slice(s.origin.length)}`,
+          );
+          return fetch(input, init);
+        },
+      }),
+    ],
+  });
+
+  const post = await client.post.byId.query({ id: '1' });
+  expectTypeOf(post).toEqualTypeOf<{ id: string; title: string }>();
+  expect(post.title).toBe('Hello');
+
+  const [, err] = await safe(client.post.byId.query({ id: 'nope' }));
+  expect(err).toMatchObject({
+    code: 'NOT_FOUND',
+    defined: true,
+    data: { id: 'nope' },
+  });
+
+  expect(
+    await client.post.list.query({
+      limit: 2,
+      tags: ['a'],
+      author: { name: 'x' },
+    }),
+  ).toEqual({ limit: 2, tags: ['a'], author: { name: 'x' } });
+
+  const created = await client.post.create.mutate({ title: 'Linked' });
+  expect(created.title).toBe('Linked');
+
+  const updated = await client.post.update.mutate({
+    params: { id: created.id },
+    query: { notify: true },
+    headers: { 'if-match': 'v9' },
+    body: { title: 'Linked 2' },
+  });
+  expect(updated).toMatchObject({
+    status: 200,
+    headers: { etag: 'v9+1' },
+    body: { id: created.id, title: 'Linked 2', notified: true },
+  });
+
+  const upload = await client.post.upload.mutate({
+    name: 'a',
+    file: new File(['abc'], 'a.txt'),
+  });
+  expect(upload).toEqual({ name: 'a', size: 3, text: 'abc' });
+
+  const events: TrackedEnvelope<{ id: string; title: string }>[] = [];
+  for await (const event of client.post.onAdd.subscribe(undefined, {
+    lastEventId: '2',
+  })) {
+    events.push(event);
+  }
+  expect(events).toEqual([{ id: '3', data: { id: '3', title: 'Post 3' } }]);
+
+  expect(await client.health.query()).toBe('ok');
+  expect(requests).toEqual([
+    'GET /api/posts/1',
+    'GET /api/posts/nope',
+    'GET /api/posts?limit=2&tags%5B%5D=a&author%5Bname%5D=x',
+    'POST /api/posts',
+    `PATCH /api/posts/${created.id}?notify=true`,
+    'POST /api/files',
+    'GET /api/post/onAdd',
+    'GET /api/health',
+  ]);
+});
+
+test('generateOpenAPI documents routes, params, bodies and errors (18 (c))', () => {
+  const doc = generateOpenAPI(router, {
+    info: { title: 'Posts API', version: '1.0.0' },
+    servers: [{ url: 'https://api.example.com' }],
+  });
+  expect(doc.openapi).toBe('3.1.1');
+  expect(Object.keys(doc.paths)).toEqual([
+    '/api/health',
+    '/api/posts/{id}',
+    '/api/posts/latest',
+    '/api/posts',
+    '/api/post/onAdd',
+    '/api/files',
+    '/api/stats',
+    '/api/boom',
+  ]);
+
+  const byId = doc.paths['/api/posts/{id}']!['get']!;
+  expect(byId).toMatchObject({
+    operationId: 'post.byId',
+    summary: 'Get a post',
+    tags: ['posts'],
+    parameters: [
+      { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+    ],
+  });
+  expect(Object.keys(byId.responses)).toEqual(['200', '400', '404', 'default']);
+  expect(byId.responses['404']).toMatchObject({
+    content: {
+      'application/json': {
+        schema: {
+          properties: {
+            code: { const: 'NOT_FOUND' },
+            data: { properties: { id: { type: 'string' } } },
+          },
+        },
+      },
+    },
+  });
+
+  const list = doc.paths['/api/posts']!['get']!;
+  expect(list.parameters).toEqual([
+    {
+      name: 'limit',
+      in: 'query',
+      required: true,
+      schema: expect.objectContaining({ type: 'integer' }),
+    },
+    {
+      name: 'tags',
+      in: 'query',
+      required: false,
+      schema: { type: 'array', items: { type: 'string' } },
+    },
+    {
+      name: 'author',
+      in: 'query',
+      required: false,
+      schema: expect.objectContaining({ type: 'object' }),
+      style: 'deepObject',
+      explode: true,
+    },
+    {
+      name: 'published',
+      in: 'query',
+      required: false,
+      schema: { type: 'boolean' },
+    },
+  ]);
+
+  const create = doc.paths['/api/posts']!['post']!;
+  expect(create.requestBody).toMatchObject({
+    required: true,
+    content: {
+      'application/json': {
+        schema: { properties: { title: { type: 'string', minLength: 1 } } },
+      },
+    },
+  });
+  expect(Object.keys(create.responses)).toEqual([
+    '201',
+    '400',
+    '401',
+    'default',
+  ]);
+
+  const update = doc.paths['/api/posts/{id}']!['patch']!;
+  expect(update.parameters).toEqual([
+    { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+    {
+      name: 'notify',
+      in: 'query',
+      required: false,
+      schema: { type: 'boolean' },
+    },
+    {
+      name: 'if-match',
+      in: 'header',
+      required: true,
+      schema: { type: 'string' },
+    },
+  ]);
+
+  const remove = doc.paths['/api/posts/{id}']!['delete']!;
+  expect(remove.requestBody).toBeUndefined();
+
+  expect(doc.paths['/api/post/onAdd']!['get']!.responses['200']).toMatchObject({
+    content: { 'text/event-stream': { schema: { type: 'object' } } },
+  });
+  expect(doc.paths['/api/stats']!['get']!.parameters).toEqual([
+    expect.objectContaining({ name: 'days', in: 'query', required: true }),
+  ]);
+  expect(JSON.parse(JSON.stringify(doc))).toEqual(doc);
+});
+
+test("target: 'rpc' documents the RPC endpoint with zero configuration (O-C)", () => {
+  const doc = generateOpenAPI(router, {
+    info: { title: 'RPC', version: '1.0.0' },
+    target: 'rpc',
+  });
+  expect(doc.paths['/trpc/post.byId']!['get']).toMatchObject({
+    parameters: [{ name: 'id', in: 'query', required: true }],
+    responses: {
+      '200': {
+        content: {
+          'application/json': {
+            schema: { properties: { json: { type: 'object' } } },
+          },
+        },
+      },
+    },
+  });
+  expect(doc.paths['/trpc/post.create']!['post']!.requestBody).toMatchObject({
+    content: {
+      'application/json': {
+        schema: { properties: { json: { properties: { title: {} } } } },
+      },
+    },
+  });
+});
+
+test('a contract alone is enough to document an API', () => {
+  const doc = generateOpenAPI(appContract, {
+    info: { title: 'Contract', version: '1.0.0' },
+  });
+  expect(doc.paths['/api/posts/{id}']!['get']!.operationId).toBe('post.byId');
+  expect(doc.paths['/api/post/create']!['post']!.responses).toHaveProperty(
+    '401',
+  );
+});
+
+test('openAPIReference serves Scalar or Swagger UI and the document (18 (e))', async () => {
+  await using s = await serve();
+  const html = await (await s.api('/docs')).text();
+  expect(html).toContain('data-url="/api/openapi.json"');
+  expect(html).toContain('@scalar/api-reference');
+
+  const spec = (await (await s.api('/openapi.json')).json()) as {
+    info: { title: string };
+    servers: { url: string }[];
+    paths: Record<string, unknown>;
+  };
+  expect(spec.info.title).toBe('Posts API');
+  expect(spec.servers).toEqual([{ url: s.origin }]);
+  expect(spec.paths).toHaveProperty('/api/posts/{id}');
+
+  const swagger = await (await s.api('/swagger')).text();
+  expect(swagger).toContain('SwaggerUIBundle');
+  expect(swagger).toContain('"/api/swagger.json"');
+});
+
+test('two procedures on the same route are rejected', () => {
+  expect(() =>
+    createOpenAPIHandler({
+      router: {
+        a: t.procedure.route({ path: '/x/{id}' }).query(() => 1),
+        b: t.procedure.route({ path: '/x/{slug}' }).query(() => 2),
+      },
+      createContext: () => ({ user: null }),
+    }),
+  ).toThrow(/"b" and "a" both map to GET \/api\/x\/\{\}/);
+});
+
+test('bracket notation round-trips', () => {
+  const value = {
+    a: { b: '1', c: ['x', 'y'] },
+    items: [{ id: '1' }, { id: '2' }],
+    empty: '',
+  };
+  expect(parseBracketNotation(toBracketNotation(value))).toEqual(value);
+  expect(
+    parseBracketNotation(
+      new URLSearchParams('__proto__[x]=1&a[constructor]=2'),
+    ),
+  ).toEqual({});
+});

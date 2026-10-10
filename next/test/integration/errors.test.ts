@@ -52,6 +52,7 @@ const router = {
     throw new Error('connect ECONNREFUSED 10.0.0.7:5432');
   }),
   effectDefect: t.procedure.query(() =>
+    // @ts-expect-error -- 02 d.ii: map Effect failures to a TRPCError first
     Effect.fail(new Error('a typed failure that is not a TRPCError')),
   ),
   badOutput: t.procedure

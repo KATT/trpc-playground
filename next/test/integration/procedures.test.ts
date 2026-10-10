@@ -1,0 +1,395 @@
+import { Context, Data, Effect, Layer } from 'effect';
+import {
+  createTRPCClient,
+  httpLink,
+  safe,
+  type ClientError,
+} from 'trpcdev/client';
+import {
+  call,
+  error,
+  initTRPC,
+  middleware,
+  ok,
+  onError,
+  onFinish,
+  onStart,
+  onSuccess,
+  tracked,
+  TRPCError,
+  type TrackedEnvelope,
+} from 'trpcdev/server';
+import { createTestServer } from 'trpcdev/testing';
+import { expect, expectTypeOf, test } from 'vite-plus/test';
+import { z } from 'zod';
+
+interface Ctx {
+  user: string | null;
+}
+const t = initTRPC<{ ctx: Ctx }>();
+
+class CurrentUser extends Context.Service<CurrentUser, { name: string }>()(
+  'CurrentUser',
+) {}
+class Clock extends Context.Service<Clock, { now: () => number }>()('Clock') {}
+
+class DbError extends Data.TaggedError('DbError')<{ reason: string }> {}
+const findPost = (
+  id: string,
+): Effect.Effect<{ id: string; title: string }, DbError> =>
+  id === 'broken'
+    ? Effect.fail(new DbError({ reason: 'connection lost' }))
+    : Effect.succeed({ id, title: `Post ${id}` });
+
+// --- declared errors --------------------------------------------------------------
+
+const notFound = t.procedure.errors({
+  NOT_FOUND: { data: z.object({ id: z.string() }) },
+  GONE: { status: 410, message: 'This post was removed' },
+});
+
+const assertExists = (id: string, made: (id: string) => TRPCError) => {
+  if (id.startsWith('missing')) throw made(id);
+};
+
+// --- middleware ---------------------------------------------------------------
+
+const cache = new Map<string, unknown>([['cached.title', 'from cache']]);
+const resolved: string[] = [];
+const cached = t.procedure.use(({ path, next }) => {
+  const hit = cache.get(path);
+  return typeof hit === 'string' ? ok(hit) : next();
+});
+
+// Middleware nests: onFinish wraps the helpers after it, so it runs last.
+const events: string[] = [];
+const lifecycle = t.procedure
+  .use(onStart(({ path }) => void events.push(`start ${path}`)))
+  .use(onFinish((result) => void events.push(`finish ${result.ok}`)))
+  .use(onError((err) => void events.push(`error ${err.code}`)))
+  .use(onSuccess((data) => void events.push(`success ${String(data)}`)));
+
+const withUser = t.middleware.effect<{ provides: CurrentUser }>()(
+  ({ ctx, next }) =>
+    ctx.user
+      ? next().pipe(Effect.provideService(CurrentUser, { name: ctx.user }))
+      : Effect.fail(error({ code: 'UNAUTHORIZED' })),
+);
+
+const timed = middleware.effect<{ ctx: { user: string | null } }>()(
+  ({ next }) =>
+    Effect.gen(function* () {
+      const clock = yield* Clock;
+      const start = clock.now();
+      const result = yield* next({ ctx: { startedAt: start } });
+      return result;
+    }),
+);
+
+const router = {
+  post: {
+    byId: notFound
+      .input(z.object({ id: z.string() }))
+      .query(({ input, errors }) => {
+        if (input.id === 'gone') return errors.GONE();
+        assertExists(input.id, (id) => errors.NOT_FOUND({ data: { id } }));
+        return { id: input.id };
+      }),
+    invalidData: notFound.query(({ errors }) =>
+      errors.NOT_FOUND({ data: { id: 1 } as unknown as { id: string } }),
+    ),
+    fromEffect: t.procedure
+      .input(z.object({ id: z.string() }))
+      .query(({ input }) =>
+        findPost(input.id).pipe(
+          Effect.catchTag('DbError', (e) =>
+            Effect.fail(
+              error({ code: 'SERVICE_UNAVAILABLE', message: e.reason }),
+            ),
+          ),
+        ),
+      ),
+  },
+  login: t.procedure
+    .input(z.object({ name: z.string() }))
+    .mutation(({ input, response }) => {
+      response.headers.append('set-cookie', `session=${input.name}; HttpOnly`);
+      response.status = 201;
+      return { ok: true };
+    }),
+  theme: t.procedure.query(({ response }) => {
+    response.headers.append('set-cookie', 'theme=dark');
+    response.headers.set('x-theme', 'dark');
+    return 'dark';
+  }),
+  cached: {
+    title: cached.output(z.string()).query(() => {
+      resolved.push('cached.title');
+      return 'from resolver';
+    }),
+    other: cached.query(() => {
+      resolved.push('cached.other');
+      return 'from resolver';
+    }),
+  },
+  lifecycle: {
+    ok: lifecycle.query(() => 'yes'),
+    fail: lifecycle.query(() => error({ code: 'CONFLICT' })),
+  },
+  me: t.procedure.use(withUser).query(() =>
+    Effect.gen(function* () {
+      return (yield* CurrentUser).name;
+    }),
+  ),
+  timed: t.procedure.use(timed).query(({ ctx }) => ctx.startedAt),
+  feed: t.procedure
+    .output(z.object({ n: z.number().transform((n) => `#${n}`) }))
+    .subscription(async function* () {
+      yield tracked('1', { n: 1 });
+      yield tracked('2', { n: 2 });
+    }),
+};
+type AppRouter = typeof router;
+
+const ClockLive = Layer.succeed(Clock, { now: () => 1234 });
+
+async function setup(user: string | null = 'alex', batch = false) {
+  const responses: Response[] = [];
+  const server = await createTestServer({
+    router,
+    batch: true,
+    createContext: () => ({ user }),
+    layer: ClockLive,
+    exposeUnexpectedErrors: false,
+  });
+  const client = createTRPCClient<AppRouter>({
+    links: [
+      httpLink({
+        url: server.url,
+        batch,
+        fetch: async (input, init) => {
+          const response = await fetch(input, init);
+          responses.push(response);
+          return response;
+        },
+      }),
+    ],
+  });
+  return {
+    server,
+    client,
+    responses,
+    [Symbol.asyncDispose]: () => server.close(),
+  };
+}
+
+async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const item of iterable) items.push(item);
+  return items;
+}
+
+test('.errors() gives the resolver typed constructors for defined errors', async () => {
+  await using ctx = await setup();
+  const res = await safe(ctx.client.post.byId.query({ id: 'missing-1' }));
+  expect(res.error).toMatchObject({
+    code: 'NOT_FOUND',
+    status: 404,
+    defined: true,
+    data: { id: 'missing-1' },
+  });
+  if (res.error?.defined && res.error.code === 'NOT_FOUND') {
+    expectTypeOf(res.error.data).toEqualTypeOf<{ id: string }>();
+  }
+
+  const gone = await safe(ctx.client.post.byId.query({ id: 'gone' }));
+  expect(gone.error).toMatchObject({
+    code: 'GONE',
+    status: 410,
+    message: 'This post was removed',
+    defined: true,
+  });
+
+  notFound.query(({ errors }) => {
+    // @ts-expect-error -- NOT_FOUND declares data, so it is required
+    errors.NOT_FOUND();
+    // @ts-expect-error -- the data must match the declared schema
+    errors.NOT_FOUND({ data: { id: 1 } });
+    // @ts-expect-error -- only declared codes have constructors
+    errors.CONFLICT();
+    return null;
+  });
+});
+
+test('declared error data is validated; invalid data is an unexpected error', async () => {
+  await using ctx = await setup();
+  const res = await safe(ctx.client.post.invalidData.query());
+  expect(res.error).toMatchObject({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: 'Internal server error',
+    defined: false,
+  });
+});
+
+test('Effect failures must be mapped to a TRPCError (02 d.ii)', async () => {
+  await using ctx = await setup();
+  expect(await ctx.client.post.fromEffect.query({ id: '1' })).toEqual({
+    id: '1',
+    title: 'Post 1',
+  });
+  const res = await safe(ctx.client.post.fromEffect.query({ id: 'broken' }));
+  expect(res.error).toMatchObject({
+    code: 'SERVICE_UNAVAILABLE',
+    message: 'connection lost',
+    defined: true,
+  });
+
+  // @ts-expect-error -- DbError is not a TRPCError
+  t.procedure.query(() => findPost('1'));
+});
+
+test('the response handle sets headers and the success status', async () => {
+  await using ctx = await setup();
+  expect(await ctx.client.login.mutate({ name: 'alex' })).toEqual({ ok: true });
+  const response = ctx.responses.at(-1)!;
+  expect(response.status).toBe(201);
+  expect(response.headers.getSetCookie()).toEqual(['session=alex; HttpOnly']);
+});
+
+test('inside a batch, headers from every call are merged', async () => {
+  await using ctx = await setup('alex', true);
+  const [login, theme] = await Promise.all([
+    ctx.client.login.mutate({ name: 'sam' }),
+    ctx.client.theme.query(),
+  ]);
+  expect(login).toEqual({ ok: true });
+  expect(theme).toBe('dark');
+  expect(ctx.responses).toHaveLength(2);
+
+  await Promise.all([
+    ctx.client.theme.query(),
+    ctx.client.post.byId.query({ id: '1' }),
+  ]);
+  const response = ctx.responses.at(-1)!;
+  expect(response.status).toBe(200);
+  expect(response.headers.getSetCookie()).toEqual(['theme=dark']);
+  expect(response.headers.get('x-theme')).toBe('dark');
+});
+
+test('ok() short-circuits the chain; output validation still runs', async () => {
+  await using ctx = await setup();
+  resolved.length = 0;
+  expect(await ctx.client.cached.title.query()).toBe('from cache');
+  expect(await ctx.client.cached.other.query()).toBe('from resolver');
+  expect(resolved).toEqual(['cached.other']);
+
+  const numeric = t.procedure.use(({ next }) =>
+    Math.random() > 2 ? ok(1) : next(),
+  );
+  // @ts-expect-error -- the middleware may short-circuit with a number
+  numeric.output(z.string()).query(() => 'text');
+  numeric.output(z.number()).query(() => 2);
+});
+
+test('lifecycle helpers observe the chain', async () => {
+  await using ctx = await setup();
+  events.length = 0;
+  await ctx.client.lifecycle.ok.query();
+  expect(events).toEqual(['start lifecycle.ok', 'success yes', 'finish true']);
+
+  events.length = 0;
+  const res = await safe(ctx.client.lifecycle.fail.query());
+  expect(res.error).toMatchObject({ code: 'CONFLICT', defined: true });
+  expect(events).toEqual([
+    'start lifecycle.fail',
+    'error CONFLICT',
+    'finish false',
+  ]);
+});
+
+test('Effect middleware provides services and its failures are typed', async () => {
+  await using ctx = await setup();
+  expect(await ctx.client.me.query()).toBe('alex');
+
+  await using anon = await setup(null);
+  const res = await safe(anon.client.me.query());
+  expect(res.error).toMatchObject({ code: 'UNAUTHORIZED', defined: true });
+  expectTypeOf(res.error).toEqualTypeOf<
+    ClientError<TRPCError<'UNAUTHORIZED', undefined>> | undefined
+  >();
+
+  // Only the Clock layer is passed: the middleware provides CurrentUser.
+  const provided = { me: router.me };
+  await using server = await createTestServer({
+    router: provided,
+    createContext: () => ({ user: 'kim' }),
+  });
+  const client = createTRPCClient<typeof provided>({
+    links: [httpLink({ url: server.url })],
+  });
+  expect(await client.me.query()).toBe('kim');
+
+  // @ts-expect-error -- declares CurrentUser but never provides it
+  t.middleware.effect<{ provides: CurrentUser }>()(({ next }) => next());
+});
+
+test('a standalone Effect middleware adds ctx and requires its services', async () => {
+  await using ctx = await setup();
+  const startedAt = await ctx.client.timed.query();
+  expect(startedAt).toBe(1234);
+  expectTypeOf(startedAt).toEqualTypeOf<number>();
+
+  const create = () =>
+    // @ts-expect-error -- the timed middleware needs Clock from the layer
+    createTestServer({
+      router: { timed: router.timed },
+      createContext: () => ({ user: null }),
+    });
+  expectTypeOf(create).toBeFunction();
+});
+
+test('.output() types tracked() subscription events', async () => {
+  await using ctx = await setup();
+  const items = await collect(ctx.client.feed.subscribe());
+  expectTypeOf(items).toEqualTypeOf<TrackedEnvelope<{ n: string }>[]>();
+  expect(items).toEqual([
+    { id: '1', data: { n: '#1' } },
+    { id: '2', data: { n: '#2' } },
+  ]);
+
+  const wrongEvents = async function* () {
+    yield tracked('1', { n: 'one' });
+  };
+  const numbers = t.procedure.output(z.object({ n: z.number() }));
+  // @ts-expect-error -- events must match the output schema's input
+  numbers.subscription(wrongEvents);
+});
+
+test('.route() is stored for the OpenAPI handler and merges through concat', () => {
+  const base = t.procedure.route({ tags: ['posts'] });
+  const proc = t.procedure
+    .route({ method: 'GET', path: '/posts/{id}' })
+    .concat(base)
+    .query(() => null);
+  expect(proc['~trpc'].route).toEqual({
+    method: 'GET',
+    path: '/posts/{id}',
+    tags: ['posts'],
+  });
+});
+
+test('call() runs one procedure, with a layer for its services', async () => {
+  expect(
+    await call(router.timed, undefined, {
+      ctx: { user: null },
+      layer: ClockLive,
+    }),
+  ).toBe(1234);
+  await expect(
+    call(router.post.byId, { id: 'missing-2' }, { ctx: { user: null } }),
+  ).rejects.toMatchObject({ code: 'NOT_FOUND', defined: true });
+
+  // @ts-expect-error -- `timed` needs Clock, so `layer` is required
+  const missing = () => call(router.timed, undefined, { ctx: { user: null } });
+  expectTypeOf(missing).toBeFunction();
+});

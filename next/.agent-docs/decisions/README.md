@@ -21,6 +21,7 @@ Decisions are never edited after the fact except to add a "Superseded by" link. 
 | [0011](./0011-since-prerelease.md)                        | `@since` uses the v12 prerelease version (Q21.2)                              | [21](../proposals/21-stability-and-jsdoc.md)           | 2026-10-09 | accepted |
 | [0012](./0012-no-unvalidated-type-helper.md)              | No `type<T>()` or plain-function parsers (Q5.2)                               | [05](../proposals/05-validation-and-schemas.md)        | 2026-10-09 | accepted |
 | [0013](./0013-root-init-option-bag.md)                    | Root init is `initTRPC<{ … }>()`, no `.create()` (Q3.1)                       | [03](../proposals/03-builder-and-init.md)              | 2026-10-10 | accepted |
+| [0014](./0014-keep-t-object.md)                           | Keep `t`; plugin packages must work through `.concat()` (Q3.5)                | [03](../proposals/03-builder-and-init.md)              | 2026-10-10 | accepted |
 
 ## Template
 

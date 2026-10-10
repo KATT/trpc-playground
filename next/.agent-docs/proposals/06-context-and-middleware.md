@@ -129,6 +129,10 @@ t.procedure.use(withOrg); // type error: requires input.orgId and ctx.db
     .concat(auditProcedure);
   ```
 
+  - **Required ([0014](../decisions/0014-keep-t-object.md)):** standalone packages must be able to publish plugins this way. A plugin's own `t` declares the ctx and meta it needs, and its middleware and inputs are what it adds.
+
+  > **Spike (2026-10-10):** [`notes/concat-plugins.md`](../notes/concat-plugins.md). `.concat()` works with `initTRPC<{ … }>()`. Requirements are checked against the current ctx (after middleware), and errors name the missing key ("db"), not v11's bare "Context mismatch". Plugin ctx and inputs flow on, plugins compose, and a published plugin's `.d.ts` is flat and readable. Every type a builder can contain must be exported: a private `unique symbol` broke declaration emit (TS2527).
+
 - **Router-level middleware** (`t.router(routes, { use: [mw] })` or oRPC's `os.use(mw).router(…)`):
   - ✅ Frequently requested.
   - ❌ Ordering and duplication problems (oRPC needs a dedupe mechanism), and it is less explicit than base procedures.

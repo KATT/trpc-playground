@@ -11,6 +11,7 @@ import {
   parseSSE,
   PROTOCOL_VERSION,
   readLines,
+  SSE_EVENT,
   type BatchCall,
   type BatchLine,
 } from '../../internal/protocol.ts';
@@ -21,6 +22,7 @@ import {
   type Serializer,
 } from '../../serializer/index.ts';
 import type { Operation, OperationStream, TRPCLink } from '../link.ts';
+import { DeferredDecoder } from './events.ts';
 
 /**
  * Options for {@link httpLink}.
@@ -405,21 +407,44 @@ export function httpLink(opts: HTTPLinkOptions): TRPCLink {
       }
       if (res) {
         if (!res.ok || !res.body) throw await readError(res);
+        const decoder = new DeferredDecoder(serializer);
         try {
           for await (const event of parseSSE(res.body)) {
-            if (event.event === 'done') return;
-            if (event.event === 'error') {
-              throw fromWireError(
-                serializer.deserialize(JSON.parse(event.data)),
-              );
+            switch (event.event) {
+              case SSE_EVENT.done:
+                return;
+              case SSE_EVENT.error:
+                throw fromWireError(
+                  serializer.deserialize(JSON.parse(event.data)),
+                );
+              case SSE_EVENT.chunk: {
+                const frame = JSON.parse(event.data) as {
+                  e: number;
+                  chunk?: unknown;
+                };
+                if ('chunk' in frame) decoder.chunk(frame.e, frame.chunk);
+                else decoder.end(frame.e);
+                continue;
+              }
+              case SSE_EVENT.message:
+              case SSE_EVENT.deferred: {
+                if (event.id !== undefined) lastEventId = event.id;
+                attempt = 0;
+                const data = JSON.parse(event.data) as unknown;
+                yield await (event.event === SSE_EVENT.deferred
+                  ? decoder.decode(
+                      (data as { body: unknown }).body,
+                      (data as { e: number }).e,
+                    )
+                  : decoder.decode(data, undefined));
+                continue;
+              }
             }
-            if (event.event !== 'message') continue;
-            if (event.id !== undefined) lastEventId = event.id;
-            attempt = 0;
-            yield serializer.deserialize(JSON.parse(event.data));
           }
         } catch (cause) {
           if (isTRPCError(cause)) throw cause;
+        } finally {
+          decoder.close();
         }
         if (signal.aborted) return;
         if (++attempt > reconnectAttempts) {
@@ -453,10 +478,8 @@ export function httpLink(opts: HTTPLinkOptions): TRPCLink {
       }),
     );
 
-  return {
-    '~link': ({ op }) => {
-      if (op.type === 'subscription') return subscription(op);
-      return maxItems > 0 ? batched(op) : single(op);
-    },
+  return ({ op }) => {
+    if (op.type === 'subscription') return subscription(op);
+    return maxItems > 0 ? batched(op) : single(op);
   };
 }

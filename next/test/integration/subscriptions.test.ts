@@ -1,0 +1,203 @@
+import { Schedule, Stream } from 'effect';
+import { createTRPCClient, httpLink, type TRPCClient } from 'trpcdev/client';
+import { error, initTRPC, tracked, type TrackedEnvelope } from 'trpcdev/server';
+import { createTestServer, type TestServer } from 'trpcdev/testing';
+import { expect, expectTypeOf, test, vi } from 'vite-plus/test';
+import { z } from 'zod';
+
+interface Context {
+  user: string | null;
+}
+const t = initTRPC<{ ctx: Context }>();
+
+const authed = t.procedure.use(({ ctx, next }) =>
+  ctx.user
+    ? next({ ctx: { user: ctx.user } })
+    : error({ code: 'UNAUTHORIZED', message: 'Sign in first' }),
+);
+
+const state = { cleanups: 0, lastEventIds: [] as (string | undefined)[] };
+let current: TestServer | undefined;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const router = {
+  countdown: t.procedure
+    .input(z.object({ from: z.number() }))
+    .subscription(async function* ({ input }) {
+      for (let n = input.from; n >= 0; n--) yield n;
+    }),
+  ticks: t.procedure.subscription(async function* ({ signal }) {
+    try {
+      let n = 0;
+      while (!signal.aborted) {
+        yield n++;
+        await sleep(5);
+      }
+    } finally {
+      state.cleanups++;
+    }
+  }),
+  posts: t.procedure.subscription(async function* ({ lastEventId }) {
+    state.lastEventIds.push(lastEventId);
+    const start = lastEventId ? Number(lastEventId) + 1 : 1;
+    for (let id = start; id <= 4; id++) {
+      yield tracked(String(id), { id, title: `Post ${id}` });
+      if (id === 2 && !lastEventId) {
+        await sleep(10);
+        current!.server.closeAllConnections();
+        await sleep(1000);
+      }
+    }
+  }),
+  failsMidway: t.procedure.subscription(async function* () {
+    yield 1;
+    throw error({ code: 'CONFLICT', message: 'Gone' });
+  }),
+  effectTicks: t.procedure.subscription(() =>
+    Stream.fromSchedule(Schedule.spaced('1 millis')).pipe(
+      Stream.map((n) => ({ tick: n })),
+      Stream.take(3),
+    ),
+  ),
+  effectFails: t.procedure.subscription(() =>
+    Stream.make(1, 2).pipe(
+      Stream.concat(Stream.fail(error({ code: 'TOO_MANY_REQUESTS' }))),
+    ),
+  ),
+  secret: authed.subscription(async function* ({ ctx }) {
+    yield `hi ${ctx.user}`;
+  }),
+};
+type AppRouter = typeof router;
+
+async function setup(user: string | null = 'alex') {
+  const server = await createTestServer({
+    router,
+    createContext: () => ({ user }),
+  });
+  current = server;
+  const client: TRPCClient<AppRouter> = createTRPCClient<AppRouter>({
+    links: [httpLink({ url: server.url, reconnect: { delayMs: () => 10 } })],
+  });
+  return { server, client, [Symbol.asyncDispose]: () => server.close() };
+}
+
+async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const item of iterable) items.push(item);
+  return items;
+}
+
+test('an async generator streams over SSE until it returns', async () => {
+  await using ctx = await setup();
+  const subscription = ctx.client.countdown.subscribe({ from: 3 });
+  expectTypeOf(subscription).toExtend<AsyncIterable<number>>();
+  expect(await collect(subscription)).toEqual([3, 2, 1, 0]);
+  const request = ctx.server.requests.at(-1)!;
+  expect(request.method).toBe('GET');
+  expect(request.headers.get('accept')).toBe('text/event-stream');
+});
+
+test('breaking out of the loop stops the server-side generator', async () => {
+  await using ctx = await setup();
+  const before = state.cleanups;
+  const seen: number[] = [];
+  for await (const n of ctx.client.ticks.subscribe()) {
+    seen.push(n);
+    if (n === 2) break;
+  }
+  expect(seen).toEqual([0, 1, 2]);
+  await vi.waitFor(() => expect(state.cleanups).toBe(before + 1));
+});
+
+test('aborting the signal ends the subscription quietly', async () => {
+  await using ctx = await setup();
+  const before = state.cleanups;
+  const controller = new AbortController();
+  const seen: number[] = [];
+  for await (const n of ctx.client.ticks.subscribe(undefined, {
+    signal: controller.signal,
+  })) {
+    seen.push(n);
+    if (n === 1) controller.abort();
+  }
+  expect(seen.slice(0, 2)).toEqual([0, 1]);
+  await vi.waitFor(() => expect(state.cleanups).toBe(before + 1));
+});
+
+test('tracked() events reconnect from the last event id', async () => {
+  await using ctx = await setup();
+  state.lastEventIds = [];
+  const events = await collect(ctx.client.posts.subscribe());
+  expectTypeOf(events).toEqualTypeOf<
+    TrackedEnvelope<{ id: number; title: string }>[]
+  >();
+  expect(events.map((e) => e.id)).toEqual(['1', '2', '3', '4']);
+  expect(events[0]!.data).toEqual({ id: 1, title: 'Post 1' });
+  expect(state.lastEventIds).toEqual([undefined, '2']);
+  expect(ctx.server.requests.at(-1)!.headers.get('last-event-id')).toBe('2');
+});
+
+test('subscribe() can resume from a known event id', async () => {
+  await using ctx = await setup();
+  const events = await collect(
+    ctx.client.posts.subscribe(undefined, { lastEventId: '3' }),
+  );
+  expect(events.map((e) => e.data.id)).toEqual([4]);
+});
+
+test('an error thrown mid-stream reaches the loop', async () => {
+  await using ctx = await setup();
+  const seen: number[] = [];
+  await expect(async () => {
+    for await (const n of ctx.client.failsMidway.subscribe()) seen.push(n);
+  }).rejects.toMatchObject({ code: 'CONFLICT', defined: false });
+  expect(seen).toEqual([1]);
+});
+
+test('an Effect Stream is a subscription', async () => {
+  await using ctx = await setup();
+  const events = await collect(ctx.client.effectTicks.subscribe());
+  expectTypeOf(events).toEqualTypeOf<{ tick: number }[]>();
+  expect(events).toEqual([{ tick: 0 }, { tick: 1 }, { tick: 2 }]);
+});
+
+test('a Stream failure is a typed error', async () => {
+  await using ctx = await setup();
+  const seen: number[] = [];
+  const err = await (async () => {
+    try {
+      for await (const n of ctx.client.effectFails.subscribe()) seen.push(n);
+    } catch (cause) {
+      return cause;
+    }
+  })();
+  expect(seen).toEqual([1, 2]);
+  expect(err).toMatchObject({
+    code: 'TOO_MANY_REQUESTS',
+    status: 429,
+    defined: true,
+  });
+});
+
+test('middleware errors fail the subscription before it starts', async () => {
+  await using ctx = await setup(null);
+  await expect(collect(ctx.client.secret.subscribe())).rejects.toMatchObject({
+    code: 'UNAUTHORIZED',
+    defined: true,
+  });
+  await using authed = await setup('sam');
+  expect(await collect(authed.client.secret.subscribe())).toEqual(['hi sam']);
+});
+
+test('the wire format is plain SSE', async () => {
+  await using ctx = await setup();
+  const res = await fetch(`${ctx.server.url}/posts`, {
+    headers: { 'last-event-id': '2' },
+  });
+  expect(res.headers.get('content-type')).toBe('text/event-stream');
+  const text = await res.text();
+  expect(text).toContain('id: 3\ndata: ');
+  expect(text.trimEnd().endsWith('event: done\ndata:')).toBe(true);
+});

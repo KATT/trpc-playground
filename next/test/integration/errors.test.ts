@@ -70,7 +70,12 @@ async function setup(opts: { expose?: boolean } = {}) {
   const client = createTRPCClient<AppRouter>({
     links: [httpLink({ url: server.url })],
   });
-  return { server, client, errors, [Symbol.asyncDispose]: server.close };
+  return {
+    server,
+    client,
+    errors,
+    [Symbol.asyncDispose]: () => server.close(),
+  };
 }
 
 test('returned errors are inferred into the union and narrow on the client', async () => {

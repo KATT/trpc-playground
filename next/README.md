@@ -42,7 +42,7 @@ pnpm example
 | `pnpm test`      | `vp test run`: Vitest, including `*.test-d.ts` type tests     |
 | `pnpm example`   | Runs `examples/minimal` on Node (workspace-linked `trpcdev`)  |
 
-`trpcdev` entry points: `/server` (builder, routers, fetch handler, callers), `/client` (typed client and links), `/effect` (Effect client), `/serializer` (danSON), `/node` (`node:http` adapter), `/testing` (`createTestServer`) and `/internal` (unstable). `/contract` and `/openapi` are placeholders. Run one test file with `pnpm vp test run test/integration/<name>`.
+`trpcdev` entry points: `/server` (builder, routers, `t.implement`, the fetch handler with `.websocket()` and `.messagePort()`, callers), `/client` (typed client and links, including `wsLink`, `messagePortLink` and `dedupeLink`), `/contract` (`contract.create`, `toContract`), `/openapi` (REST handler, `generateOpenAPI`, reference UI, `openAPILink`), `/effect` (Effect client), `/serializer` (danSON), `/node` (`node:http` adapter and WebSocket upgrade), `/testing` (`createTestServer`) and `/internal` (unstable). Run one test file with `pnpm vp test run test/integration/<name>`.
 
 **Pre-commit:** `.vite-hooks/pre-commit` runs `vp staged` (see `staged` in `vite.config.ts`): `vp check --fix` on staged files under `next/`, plus `vp test related` for staged `.ts` files. `pnpm install` enables it via `vp config` unless `core.hooksPath` is already set to something else. Skip once with `VP_GIT_HOOKS=0 git commit …`.
 

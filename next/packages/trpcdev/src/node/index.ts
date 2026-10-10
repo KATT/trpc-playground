@@ -1,19 +1,34 @@
 /**
- * Serve a fetch handler with `node:http`.
+ * Serve a fetch handler with `node:http`, including WebSocket upgrades.
  *
  * @example
  * ```ts
  * import { createServer } from 'node:http';
  * import { createFetchHandler } from 'trpcdev/server';
- * import { toNodeListener } from 'trpcdev/node';
+ * import { toNodeListener, toNodeUpgradeListener } from 'trpcdev/node';
  *
- * createServer(toNodeListener(createFetchHandler({ router }))).listen(3000);
+ * const handler = createFetchHandler({ router });
+ * createServer(toNodeListener(handler))
+ *   .on('upgrade', toNodeUpgradeListener(handler))
+ *   .listen(3000);
  * ```
  * @module
  */
 /// <reference types="node" />
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Readable } from 'node:stream';
+import { Readable, type Duplex } from 'node:stream';
+import type { WebSocketLike } from '../server/socket.ts';
+import {
+  acceptWebSocket,
+  rejectUpgrade,
+  type AcceptWebSocketOptions,
+} from './websocket.ts';
+
+export {
+  acceptWebSocket,
+  NodeWebSocket,
+  type AcceptWebSocketOptions,
+} from './websocket.ts';
 
 /**
  * Anything with a web-standard `fetch` method, like `createFetchHandler()`.
@@ -37,7 +52,7 @@ export interface FetchLike {
  */
 export function toWebRequest(
   req: IncomingMessage,
-  res: ServerResponse,
+  res: ServerResponse | Duplex,
 ): Request {
   const controller = new AbortController();
   res.on('close', () => {
@@ -136,5 +151,67 @@ export function toNodeListener(
         res.end();
       }
     })();
+  };
+}
+
+/**
+ * Something that serves WebSockets, like `createFetchHandler()`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface WebSocketHandlerLike {
+  websocket(socket: WebSocketLike, opts: { request: Request }): void;
+}
+
+/**
+ * Options for {@link toNodeUpgradeListener}.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface NodeUpgradeOptions extends AcceptWebSocketOptions {
+  /**
+   * Only upgrade requests to this path; others get a 404.
+   * @default '/trpc'
+   */
+  endpoint?: string;
+  /**
+   * Accept the upgrade only when this returns true. Browsers send cookies
+   * with cross-site WebSocket requests, so check `origin` when you
+   * authenticate with cookies.
+   */
+  allowOrigin?: (origin: string | undefined) => boolean;
+}
+
+/**
+ * Adapts a handler to `node:http`'s `upgrade` event: accepts WebSockets on
+ * the endpoint and serves calls over them (10).
+ *
+ * @example
+ * ```ts
+ * server.on('upgrade', toNodeUpgradeListener(handler, {
+ *   allowOrigin: (origin) => origin === 'https://app.example.com',
+ * }));
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function toNodeUpgradeListener(
+  handler: WebSocketHandlerLike,
+  opts: NodeUpgradeOptions = {},
+): (req: IncomingMessage, socket: Duplex, head: Buffer) => void {
+  const endpoint = `/${(opts.endpoint ?? '/trpc').replace(/^\/+|\/+$/g, '')}`;
+  return (req, socket, head) => {
+    const { pathname } = new URL(req.url ?? '/', 'http://localhost');
+    if (pathname !== endpoint && pathname !== `${endpoint}/`) {
+      rejectUpgrade(socket, 404, 'Not Found');
+      return;
+    }
+    if (opts.allowOrigin && !opts.allowOrigin(req.headers.origin)) {
+      rejectUpgrade(socket, 403, 'Forbidden');
+      return;
+    }
+    const request = toWebRequest(req, socket);
+    const ws = acceptWebSocket(req, socket, head, opts);
+    if (ws) handler.websocket(ws, { request });
   };
 }

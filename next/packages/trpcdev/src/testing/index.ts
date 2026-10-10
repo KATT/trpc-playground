@@ -1,5 +1,5 @@
 /**
- * Helpers for testing routers over real HTTP.
+ * Helpers for testing routers over real HTTP and WebSockets.
  *
  * @example
  * ```ts
@@ -11,7 +11,8 @@
 /// <reference types="node" />
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { toNodeListener } from '../node/index.ts';
+import type { Duplex } from 'node:stream';
+import { toNodeListener, toNodeUpgradeListener } from '../node/index.ts';
 import {
   createFetchHandler,
   type FetchHandler,
@@ -27,6 +28,8 @@ import type { AnyRouter } from '../server/router.ts';
 export interface TestServer extends AsyncDisposable {
   /** The endpoint URL, e.g. `http://127.0.0.1:54321/trpc`. */
   readonly url: string;
+  /** The WebSocket endpoint URL, e.g. `ws://127.0.0.1:54321/trpc`. */
+  readonly wsUrl: string;
   readonly handler: FetchHandler;
   readonly server: Server;
   /** Requests the server has received, in order. */
@@ -35,6 +38,8 @@ export interface TestServer extends AsyncDisposable {
     url: string;
     headers: Headers;
   }>;
+  /** Drops every open HTTP connection and WebSocket, without a close handshake. */
+  dropConnections(): void;
   /** Closes open connections, stops the server and disposes the handler. */
   close(): Promise<void>;
 }
@@ -66,19 +71,32 @@ export async function createTestServer<TRouter extends AnyRouter>(
     },
   };
   const server = createServer(toNodeListener(recording));
+  const upgrade = toNodeUpgradeListener(handler, { endpoint: opts.endpoint });
+  const sockets = new Set<Duplex>();
+  server.on('upgrade', (req, socket, head) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    upgrade(req, socket, head);
+  });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   const endpoint = (opts.endpoint ?? '/trpc').replace(/^\/+|\/+$/g, '');
-  const close = async () => {
+  const dropConnections = () => {
     server.closeAllConnections();
+    for (const socket of sockets) socket.destroy();
+  };
+  const close = async () => {
+    dropConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await handler.dispose();
   };
   return {
     url: `http://127.0.0.1:${port}/${endpoint}`,
+    wsUrl: `ws://127.0.0.1:${port}/${endpoint}`,
     handler,
     server,
     requests,
+    dropConnections,
     close,
     [Symbol.asyncDispose]: close,
   };

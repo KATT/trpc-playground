@@ -41,3 +41,4 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm check
       - run: pnpm test
+      - run: pnpm example

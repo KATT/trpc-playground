@@ -74,6 +74,12 @@ Alex asked for a first build of v12 "following what we've said in ideas.md. For 
 - **F-B:** link fields live under `context`.
 - **Built-in links:** one `httpLink` (`batch`, streaming and SSE by negotiation), `splitLink`, `loggerLink`, `retryLink` and `localLink`. `wsLink`, `messagePortLink` and `dedupeLink` are follow-ups.
 - **Effect client:** `createEffectClient` in `trpcdev/effect`. Each call returns an `Effect` (or a `Stream` for subscriptions).
+- **Client output types:** the client types outputs as `Deserialized<Output>`. Generators become `AsyncIterable`s and thenables become `Promise`s at any depth, and built-ins (`Date`, `Map`, `URL`, …) are left alone. Custom serializer types are mapped structurally, so their methods stay but private fields are lost.
+
+### Serializer and portability
+
+- **Plain objects:** deserialized objects have `Object.prototype`, not a null prototype. The deserializer already rejects `__proto__`, `constructor` and `prototype` keys, and query-param parsing only follows own keys. One consequence is that a data key named `constructor` can't round-trip.
+- **Nameable builder types:** `trpcdev/server` exports the generic aliases that inferred procedures reference (`With`, `BuildProcedure`, `InputDef`, `Split*`, `ConcatCheck`). They are public, experimental types rather than `@internal`, so a future `stripInternal` build cannot reintroduce TS2883. `test/portability` emits declarations to catch regressions.
 
 ## Rationale
 
@@ -95,3 +101,5 @@ None recorded yet. `../reference/orpc-parity.md` should be updated once these ar
 - [ ] `t.middleware.effect`, `ok()`, lifecycle helpers (06).
 - [ ] `response` handle and declared `.errors()` map (04, 07).
 - [ ] `wsLink`, `messagePortLink`, `dedupeLink`, contract-first, OpenAPI.
+- [ ] Output validation and `tracked()`: the runtime validates `event.data`, but `.output()` on a subscription is not typed for tracked events yet.
+- [ ] `call()` does not take a `layer`, so it only works for procedures that need no Effect services.

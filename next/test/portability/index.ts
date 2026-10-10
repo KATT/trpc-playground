@@ -15,6 +15,8 @@ import {
   initTRPC,
   mergeRouters,
   middleware,
+  ok,
+  onFinish,
   tracked,
 } from 'trpcdev/server';
 import { createSerializer } from 'trpcdev/serializer';
@@ -54,6 +56,23 @@ export const requireAdmin = middleware<{ ctx: { user: User } }>()(
     ctx.user.id === 'admin' ? next() : error({ code: 'FORBIDDEN' }),
 );
 
+class CurrentUser extends Context.Service<CurrentUser, User>()('CurrentUser') {}
+
+export const withCurrentUser = t.middleware.effect<{ provides: CurrentUser }>()(
+  ({ ctx, next }) =>
+    ctx.user
+      ? next().pipe(Effect.provideService(CurrentUser, ctx.user))
+      : Effect.fail(error({ code: 'UNAUTHORIZED' })),
+);
+
+export const standaloneEffect = middleware.effect<{
+  ctx: { user: User | null };
+}>()(({ next }) => next({ ctx: { at: 0 } }));
+
+export const declared = t.procedure
+  .errors({ NOT_FOUND: { data: z.object({ id: z.string() }) } })
+  .route({ method: 'GET', path: '/posts/{id}' });
+
 const pluginT = initTRPC<{ ctx: { user: User } }>();
 export const orgPlugin = pluginT.procedure
   .input(z.object({ orgId: z.string() }))
@@ -86,6 +105,24 @@ export const postRouter = {
     yield tracked('1', { id: '1' });
   }),
   ticks: t.procedure.subscription(() => Stream.make(1, 2, 3)),
+  find: declared
+    .input(z.object({ id: z.string() }))
+    .query(({ input, errors }) => errors.NOT_FOUND({ data: { id: input.id } })),
+  me: t.procedure
+    .use(withCurrentUser)
+    .use(standaloneEffect)
+    .use(onFinish(() => undefined))
+    .query(() =>
+      Effect.gen(function* () {
+        return yield* CurrentUser;
+      }),
+    ),
+  cached: t.procedure
+    .use(({ next }) => (Math.random() > 2 ? ok('hit') : next()))
+    .mutation(({ response }) => {
+      response.status = 201;
+      return 'miss';
+    }),
 };
 
 export const appRouter = mergeRouters(postRouter, {

@@ -43,7 +43,11 @@ export interface BuilderDef {
   requires: unknown;
 }
 
-/** @internal */
+/**
+ * Part of inferred procedure types; exported so they stay nameable.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export type With<TDef extends BuilderDef, P extends Partial<BuilderDef>> = {
   [K in keyof BuilderDef]: K extends keyof P ? P[K] : TDef[K];
 };
@@ -131,13 +135,21 @@ type ServicesOf<R> = R extends AnyTRPCError
       ? S
       : never;
 
-/** @internal */
+/**
+ * Part of inferred procedure types; exported so they stay nameable.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export interface Split {
   output: unknown;
   errors: AnyTRPCError;
   services: unknown;
 }
-/** @internal */
+/**
+ * Part of inferred procedure types; exported so they stay nameable.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export type SplitReturn<R> =
   IsAny<Awaited<R>> extends true
     ? { output: any; errors: never; services: never }
@@ -159,7 +171,11 @@ type StreamErrorsOf<R> = R extends AnyTRPCError
   : R extends Stream.Stream<any, infer E, any>
     ? Extract<E, AnyTRPCError>
     : never;
-/** @internal */
+/**
+ * Part of inferred procedure types; exported so they stay nameable.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export type SplitStream<R> =
   IsAny<Awaited<R>> extends true
     ? { output: any; errors: never; services: never }
@@ -175,7 +191,11 @@ type OutputConstraint<TDef extends BuilderDef> = TDef['outputIn'] extends Unset
       | MaybePromise<TDef['outputIn'] | AnyTRPCError>
       | Effect.Effect<TDef['outputIn'] | AnyTRPCError, any, any>;
 
-/** @internal */
+/**
+ * Part of inferred procedure types; exported so they stay nameable.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export type BuildProcedure<
   TDef extends BuilderDef,
   TType extends ProcedureType,
@@ -194,7 +214,11 @@ export type BuildProcedure<
 
 // --- concat ----------------------------------------------------------------------
 
-/** `unknown` when `plugin` may be concatenated onto a builder with `TDef`. @internal */
+/**
+ * `unknown` when `plugin` may be concatenated onto a builder with `TDef`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export type ConcatCheck<TDef extends BuilderDef, TPlugin extends BuilderDef> = [
   Missing<CurrentCtx<TDef>, TPlugin['ctx']>,
 ] extends [never]
@@ -445,7 +469,12 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
   ): BuildProcedure<TDef, 'subscription', SplitStream<$Ret>>;
 }
 
-type InputDef<TDef extends BuilderDef, $S extends AnySchema> = With<
+/**
+ * Part of inferred procedure types; exported so they stay nameable.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type InputDef<TDef extends BuilderDef, $S extends AnySchema> = With<
   TDef,
   {
     inputIn: Merge<TDef['inputIn'], InOf<$S>>;

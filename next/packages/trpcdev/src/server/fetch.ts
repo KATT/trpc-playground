@@ -76,7 +76,12 @@ export interface OnErrorOpts {
   readonly request: Request;
 }
 
-type ContextOption<TCtx> = {} extends TCtx
+/**
+ * `createContext`, required when the router's procedures need ctx.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type ContextOption<TCtx> = {} extends TCtx
   ? {
       /** Runs once per request (once per batch). */
       createContext?: (opts: CreateContextOpts) => MaybePromise<TCtx>;
@@ -86,7 +91,12 @@ type ContextOption<TCtx> = {} extends TCtx
       createContext: (opts: CreateContextOpts) => MaybePromise<TCtx>;
     };
 
-type LayerOption<TServices> = [TServices] extends [never]
+/**
+ * `layer`, required when the router's procedures need Effect services.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type LayerOption<TServices> = [TServices] extends [never]
   ? { layer?: Layer.Layer<any, any, never> }
   : {
       /** Provides the Effect services the router's procedures need (02 S1). */

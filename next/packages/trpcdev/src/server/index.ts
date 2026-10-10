@@ -128,7 +128,9 @@ export { tracked, type TrackedEnvelope } from './tracked.ts';
 export {
   createFetchHandler,
   type BaseHandlerOptions,
+  type ContextOption,
   type CreateContextOpts,
+  type LayerOption,
   type FetchHandler,
   type FetchHandlerOptions,
   type OnErrorOpts,

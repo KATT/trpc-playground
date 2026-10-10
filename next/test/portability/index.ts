@@ -16,6 +16,7 @@ import {
   splitLink,
   wsLink,
 } from 'trpcdev/client';
+import { contract, toContract, type inferContract } from 'trpcdev/contract';
 import { createEffectClient } from 'trpcdev/effect';
 import {
   createFetchHandler,
@@ -181,6 +182,44 @@ export const typedClient = createTRPCClient({
 export const typedEffectClient = createEffectClient({
   router: routerType<AppRouter>(),
   links: [traceLink, httpLink({ url: '/trpc' })],
+});
+
+const c = contract.create<{ meta: { scope?: string } }>();
+
+export const userContract = {
+  me: c
+    .output(Schema.Struct({ id: Schema.String, name: Schema.String }))
+    .errors({ UNAUTHORIZED: {} })
+    .query(),
+  rename: c
+    .input(z.object({ name: z.string() }))
+    .output(z.object({ name: z.string() }))
+    .mutation(),
+  presence: c.output(z.string()).subscription({ tracked: true }),
+};
+
+export const userImpl = t.implement(userContract);
+
+export const userRouter = userImpl.router({
+  me: userImpl.me
+    .use(({ ctx, next }) =>
+      ctx.user
+        ? next({ ctx: { user: ctx.user } })
+        : error({ code: 'UNAUTHORIZED' }),
+    )
+    .query(({ ctx }) => ctx.user),
+  rename: userImpl.rename.mutation(({ input }) => input),
+  presence: userImpl.presence.subscription(async function* () {
+    yield tracked('1', 'online');
+  }),
+});
+
+export type UserContract = inferContract<typeof userRouter>;
+export const userContractJSON = toContract(userRouter);
+
+export const contractClient = createTRPCClient({
+  router: userContract,
+  links: [httpLink({ url: '/trpc' })],
 });
 
 export const caller = createRouterClient(appRouter, {

@@ -1,0 +1,451 @@
+import { flattenRouter, inputJSONSchema } from '../internal/describe.ts';
+import { ERROR_STATUS } from '../internal/error.ts';
+import { toJSONSchema, type JSONSchema } from '../internal/json-schema.ts';
+import type { AnyProcedure, ProcedureInternals } from '../server/procedure.ts';
+import { propertySchema } from './coerce.ts';
+import { normalizePrefix, resolveRoute, usesQuery } from './routes.ts';
+
+type Schema = Exclude<JSONSchema, boolean>;
+
+/**
+ * An OpenAPI 3.1 document. Loosely typed: it is meant to be served or
+ * written to a file.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface OpenAPIDocument {
+  readonly openapi: '3.1.1';
+  readonly info: OpenAPIInfo;
+  readonly servers?: ReadonlyArray<OpenAPIServer>;
+  readonly paths: Record<string, Record<string, OpenAPIOperation>>;
+  readonly components: { readonly schemas: Record<string, JSONSchema> };
+}
+
+/**
+ * The document's `info`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface OpenAPIInfo {
+  readonly title: string;
+  readonly version: string;
+  readonly description?: string;
+}
+
+/**
+ * A server the document lists.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface OpenAPIServer {
+  readonly url: string;
+  readonly description?: string;
+}
+
+/**
+ * One operation of an {@link OpenAPIDocument}.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface OpenAPIOperation {
+  readonly operationId: string;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: ReadonlyArray<string>;
+  readonly deprecated?: boolean;
+  readonly parameters?: ReadonlyArray<Record<string, unknown>>;
+  readonly requestBody?: Record<string, unknown>;
+  readonly responses: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * The options of {@link generateOpenAPI}.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface GenerateOpenAPIOptions {
+  info: OpenAPIInfo;
+  servers?: ReadonlyArray<OpenAPIServer>;
+  /**
+   * `'openapi'` documents the REST mapping {@link createOpenAPIHandler}
+   * serves (`.route()`s). `'rpc'` documents the RPC endpoint of
+   * `createFetchHandler` with zero configuration (O-C).
+   * @default 'openapi'
+   */
+  target?: 'openapi' | 'rpc';
+  /**
+   * The handler's prefix (`'openapi'`) or endpoint (`'rpc'`).
+   * @default '/api', or '/trpc' for `'rpc'`
+   */
+  prefix?: string;
+  /** Leaves procedures out of the document. */
+  filter?: (opts: { path: string; procedure: AnyProcedure }) => boolean;
+}
+
+const ERROR_SCHEMA = 'TRPCError';
+
+/** Moves `$defs` into `components.schemas` and rewrites their `$ref`s. */
+function hoist(
+  schema: JSONSchema | undefined,
+  scope: string,
+  components: Record<string, JSONSchema>,
+): JSONSchema | undefined {
+  if (!schema || typeof schema !== 'object') return schema;
+  const defs = schema['$defs'] as Record<string, JSONSchema> | undefined;
+  if (!defs) return schema;
+  const name = (key: string) => `${scope}.${key}`;
+  const rewrite = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (typeof node !== 'object' || node === null) return node;
+    return Object.fromEntries(
+      Object.entries(node).map(([k, v]) => [
+        k,
+        k === '$ref' && typeof v === 'string' && v.startsWith('#/$defs/')
+          ? `#/components/schemas/${name(decodeURIComponent(v.slice(8)))}`
+          : rewrite(v),
+      ]),
+    );
+  };
+  for (const [key, def] of Object.entries(defs)) {
+    components[name(key)] = rewrite(def) as JSONSchema;
+  }
+  const { $defs: _, ...rest } = schema;
+  return rewrite(rest) as JSONSchema;
+}
+
+const withoutProperties = (
+  schema: JSONSchema | undefined,
+  keys: ReadonlyArray<string>,
+): JSONSchema | undefined => {
+  if (!schema || typeof schema !== 'object' || keys.length === 0) return schema;
+  const properties = schema['properties'] as
+    | Record<string, JSONSchema>
+    | undefined;
+  if (!properties) return schema;
+  const rest = Object.fromEntries(
+    Object.entries(properties).filter(([k]) => !keys.includes(k)),
+  );
+  const required = (schema['required'] as string[] | undefined)?.filter(
+    (k) => !keys.includes(k),
+  );
+  return {
+    ...schema,
+    properties: rest,
+    ...(required ? { required } : {}),
+  };
+};
+
+const objectProperties = (
+  schema: JSONSchema | undefined,
+): Array<[name: string, schema: JSONSchema, required: boolean]> => {
+  if (!schema || typeof schema !== 'object') return [];
+  const parts = [schema, ...((schema['allOf'] as Schema[] | undefined) ?? [])];
+  return parts.flatMap((part) => {
+    const properties = part['properties'] as
+      | Record<string, JSONSchema>
+      | undefined;
+    const required = (part['required'] as string[] | undefined) ?? [];
+    return Object.entries(properties ?? {}).map(
+      ([name, s]): [string, JSONSchema, boolean] => [
+        name,
+        s,
+        required.includes(name),
+      ],
+    );
+  });
+};
+
+const isStructured = (schema: JSONSchema) =>
+  typeof schema === 'object' &&
+  (schema['type'] === 'object' || schema['properties'] !== undefined);
+
+const errorSchema = (
+  code: string,
+  status: number,
+  data?: JSONSchema,
+): Schema => ({
+  type: 'object',
+  properties: {
+    defined: { const: true },
+    code: { const: code },
+    status: { const: status },
+    message: { type: 'string' },
+    ...(data ? { data } : {}),
+  },
+  required: ['defined', 'code', 'status', 'message', ...(data ? ['data'] : [])],
+});
+
+const VALIDATION_DATA: Schema = {
+  type: 'object',
+  properties: {
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          message: { type: 'string' },
+          path: { type: 'array', items: { type: ['string', 'number'] } },
+        },
+        required: ['message'],
+      },
+    },
+  },
+  required: ['issues'],
+};
+
+const rpcWrap = (schema: JSONSchema | undefined): Schema => ({
+  type: 'object',
+  properties: { json: schema ?? {} },
+  required: ['json'],
+});
+
+function errorResponses(
+  def: ProcedureInternals,
+  scope: string,
+  components: Record<string, JSONSchema>,
+  hasInput: boolean,
+  target: 'openapi' | 'rpc',
+): Record<string, Record<string, unknown>> {
+  const byStatus = new Map<number, Schema[]>();
+  const add = (status: number, schema: Schema) =>
+    byStatus.set(status, [...(byStatus.get(status) ?? []), schema]);
+  if (hasInput) add(400, errorSchema('BAD_REQUEST', 400, VALIDATION_DATA));
+  for (const [code, spec] of Object.entries(def.errors)) {
+    const status =
+      spec.status ?? (ERROR_STATUS as Record<string, number>)[code] ?? 500;
+    const data = spec.data
+      ? hoist(toJSONSchema(spec.data, 'output'), `${scope}.${code}`, components)
+      : undefined;
+    add(
+      status,
+      errorSchema(code, status, data ?? (spec.data ? {} : undefined)),
+    );
+  }
+  const responses: Record<string, Record<string, unknown>> = {};
+  for (const [status, schemas] of [...byStatus].sort(([a], [b]) => a - b)) {
+    const schema = schemas.length === 1 ? schemas[0]! : { anyOf: schemas };
+    responses[String(status)] = {
+      description: schemas
+        .map((s) => (s['properties'] as { code: { const: string } }).code.const)
+        .join(' | '),
+      content: {
+        'application/json': {
+          schema:
+            target === 'rpc'
+              ? rpcWrap({ type: 'object', properties: { error: schema } })
+              : schema,
+        },
+      },
+    };
+  }
+  responses['default'] = {
+    description: 'An error outside the typed union',
+    content: {
+      'application/json': {
+        schema:
+          target === 'rpc'
+            ? rpcWrap({
+                type: 'object',
+                properties: {
+                  error: { $ref: `#/components/schemas/${ERROR_SCHEMA}` },
+                },
+              })
+            : { $ref: `#/components/schemas/${ERROR_SCHEMA}` },
+      },
+    },
+  };
+  return responses;
+}
+
+/**
+ * Generates an OpenAPI 3.1 document from a router's schemas (18 (c)), with
+ * any schema library that implements [Standard JSON
+ * Schema](https://standardschema.dev/json-schema) (zod 4, ArkType, …) and
+ * Effect Schema. Declared errors become responses with their status and
+ * `data` schema; procedures with an input document the 400 validation
+ * error. Procedures without static schemas (no `.input()`, or a ctx
+ * callback) get `{}`.
+ *
+ * @example
+ * ```ts
+ * const spec = generateOpenAPI(appRouter, {
+ *   info: { title: 'API', version: '1.0.0' },
+ *   servers: [{ url: 'https://api.example.com' }],
+ * });
+ * await fs.writeFile('openapi.json', JSON.stringify(spec, null, 2));
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function generateOpenAPI(
+  router: object,
+  opts: GenerateOpenAPIOptions,
+): OpenAPIDocument {
+  const target = opts.target ?? 'openapi';
+  const prefix =
+    target === 'rpc'
+      ? normalizePrefix(opts.prefix ?? '/trpc')
+      : normalizePrefix(opts.prefix);
+  const components: Record<string, JSONSchema> = {
+    [ERROR_SCHEMA]: {
+      type: 'object',
+      properties: {
+        defined: { type: 'boolean' },
+        code: { type: 'string' },
+        status: { type: 'integer' },
+        message: { type: 'string' },
+        data: {},
+      },
+      required: ['defined', 'code', 'status', 'message'],
+    },
+  };
+  const paths: OpenAPIDocument['paths'] = {};
+
+  for (const [path, procedure] of flattenRouter(router)) {
+    if (opts.filter && !opts.filter({ path, procedure })) continue;
+    const def = procedure['~trpc'];
+    const route =
+      target === 'rpc'
+        ? resolveRoute(path, def.type, { path: `/${path}` }, prefix)
+        : resolveRoute(path, def.type, def.route, prefix);
+    const input = hoist(inputJSONSchema(def), `${path}.input`, components);
+    const rawOutput = def.output
+      ? toJSONSchema(def.output, 'output')
+      : undefined;
+    const detailedIn =
+      target === 'openapi' && route.inputStructure === 'detailed';
+    const detailedOut =
+      target === 'openapi' && route.outputStructure === 'detailed';
+    const output = hoist(
+      detailedOut ? propertySchema(rawOutput, 'body') : rawOutput,
+      `${path}.output`,
+      components,
+    );
+
+    const parameters: Record<string, unknown>[] = [];
+    let requestBody: Record<string, unknown> | undefined;
+    const param = (
+      name: string,
+      where: string,
+      schema: JSONSchema,
+      required: boolean,
+    ) => {
+      parameters.push({
+        name,
+        in: where,
+        required: where === 'path' ? true : required,
+        schema,
+        ...(where === 'query' && isStructured(schema)
+          ? { style: 'deepObject', explode: true }
+          : {}),
+      });
+    };
+
+    if (detailedIn) {
+      for (const [name, schema] of objectProperties(
+        propertySchema(input, 'params'),
+      )) {
+        param(name, 'path', schema, true);
+      }
+      for (const [name, schema, required] of objectProperties(
+        propertySchema(input, 'query'),
+      )) {
+        param(name, 'query', schema, required);
+      }
+      for (const [name, schema, required] of objectProperties(
+        propertySchema(input, 'headers'),
+      )) {
+        param(name, 'header', schema, required);
+      }
+      const body = propertySchema(input, 'body');
+      if (body !== undefined && !usesQuery(route.method)) {
+        requestBody = {
+          required: true,
+          content: { 'application/json': { schema: body } },
+        };
+      }
+    } else {
+      for (const name of route.params) {
+        param(
+          name,
+          'path',
+          propertySchema(input, name) ?? { type: 'string' },
+          true,
+        );
+      }
+      if (target === 'rpc' && !usesQuery(route.method)) {
+        if (input) {
+          requestBody = {
+            required: true,
+            content: { 'application/json': { schema: rpcWrap(input) } },
+          };
+        }
+      } else if (usesQuery(route.method)) {
+        for (const [name, schema, required] of objectProperties(input)) {
+          if (!route.params.includes(name))
+            param(name, 'query', schema, required);
+        }
+      } else if (input) {
+        const body = withoutProperties(input, route.params);
+        const properties = (body as Schema)['properties'];
+        const empty =
+          route.params.length > 0 &&
+          typeof properties === 'object' &&
+          properties !== null &&
+          Object.keys(properties).length === 0;
+        if (!empty)
+          requestBody = {
+            required: Boolean(
+              ((body as Schema)['required'] as unknown[] | undefined)?.length,
+            ),
+            content: { 'application/json': { schema: body } },
+          };
+      }
+    }
+
+    const success =
+      def.type === 'subscription'
+        ? {
+            description:
+              'A stream of server-sent events. Each `message` event carries one event as JSON; `id` is set for `tracked()` events.',
+            content: {
+              'text/event-stream': {
+                schema: target === 'rpc' ? rpcWrap(output) : (output ?? {}),
+              },
+            },
+          }
+        : {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: target === 'rpc' ? rpcWrap(output) : (output ?? {}),
+              },
+            },
+          };
+
+    const r = def.route;
+    const operation: OpenAPIOperation = {
+      operationId: (target === 'openapi' && r?.operationId) || path,
+      ...(r?.summary ? { summary: r.summary } : {}),
+      ...(r?.description ? { description: r.description } : {}),
+      ...(r?.tags ? { tags: r.tags } : {}),
+      ...(r?.deprecated ? { deprecated: true } : {}),
+      ...(parameters.length ? { parameters } : {}),
+      ...(requestBody ? { requestBody } : {}),
+      responses: {
+        [String(target === 'rpc' ? 200 : route.successStatus)]: success,
+        ...errorResponses(def, path, components, input !== undefined, target),
+      },
+    };
+    const methods = (paths[route.path] ??= {});
+    methods[route.method.toLowerCase()] = operation;
+  }
+
+  return {
+    openapi: '3.1.1',
+    info: opts.info,
+    ...(opts.servers ? { servers: opts.servers } : {}),
+    paths,
+    components: { schemas: components },
+  };
+}

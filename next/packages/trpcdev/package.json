@@ -35,6 +35,10 @@
     "./internal": {
       "types": "./src/internal/index.ts",
       "default": "./src/internal/index.ts"
+    },
+    "./node": {
+      "types": "./src/node/index.ts",
+      "default": "./src/node/index.ts"
     }
   },
   "scripts": {
@@ -45,6 +49,7 @@
     "effect": "^4.0.0"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
     "vite-plus": "1.1.0"
   }

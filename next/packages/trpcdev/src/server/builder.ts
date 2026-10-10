@@ -1,0 +1,502 @@
+import type { Context, Effect, Stream } from 'effect';
+import type { AnyTRPCError } from '../internal/error.ts';
+import type {
+  IsAny,
+  MaybePromise,
+  Merge,
+  Missing,
+  Overwrite,
+  ProcedureType,
+  TypeError,
+  Unset,
+  Value,
+} from '../internal/types.ts';
+import type { MiddlewareFunction } from './middleware.ts';
+import type { Procedure, Step } from './procedure.ts';
+import type {
+  AnySchema,
+  InOf,
+  InputValidationError,
+  OutOf,
+  SchemaServices,
+} from './schema.ts';
+
+/**
+ * The builder's state: one mapped bag (03 G-A).
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface BuilderDef {
+  /** The root ctx. For a plugin, what it requires. */
+  ctx: object;
+  /** What middleware has added so far. */
+  ctxAdded: object;
+  meta: object;
+  inputIn: unknown;
+  inputOut: unknown;
+  outputIn: unknown;
+  outputOut: unknown;
+  errors: AnyTRPCError;
+  /** Effect services provided by `.provide()`. */
+  provided: unknown;
+  /** Effect services required by steps (input schemas, `.provide()` effects). */
+  requires: unknown;
+}
+
+/** @internal */
+export type With<TDef extends BuilderDef, P extends Partial<BuilderDef>> = {
+  [K in keyof BuilderDef]: K extends keyof P ? P[K] : TDef[K];
+};
+
+/**
+ * The ctx at this point of the chain.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type CurrentCtx<TDef extends BuilderDef> = Overwrite<
+  TDef['ctx'],
+  TDef['ctxAdded']
+>;
+
+/**
+ * What a context-aware input callback receives (05 D-A).
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface InputOpts<TCtx, TMeta> {
+  readonly ctx: TCtx;
+  readonly meta: TMeta;
+  readonly path: string;
+  readonly type: ProcedureType;
+}
+
+/**
+ * What a resolver receives.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface ResolverOpts<TDef extends BuilderDef> {
+  readonly ctx: CurrentCtx<TDef>;
+  readonly input: Value<TDef['inputOut']>;
+  readonly meta: TDef['meta'];
+  readonly path: string;
+  readonly type: ProcedureType;
+  /** Aborted when the client goes away. */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * What a subscription resolver receives.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface SubscriptionResolverOpts<
+  TDef extends BuilderDef,
+> extends ResolverOpts<TDef> {
+  /** The id of the last `tracked()` event the client saw, when resuming. */
+  readonly lastEventId: string | undefined;
+}
+
+/**
+ * What `.provide()`'s factory receives.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface ProvideOpts<TDef extends BuilderDef> {
+  readonly ctx: CurrentCtx<TDef>;
+  readonly input: Value<TDef['inputOut']>;
+  readonly meta: TDef['meta'];
+  readonly path: string;
+}
+
+// --- splitting a resolver's return type ----------------------------------------
+
+type OutputOf<R> = R extends AnyTRPCError
+  ? never
+  : R extends Stream.Stream<infer A, any, any>
+    ? AsyncIterable<A>
+    : R extends Effect.Effect<infer A, any, any>
+      ? Exclude<A, AnyTRPCError>
+      : R;
+type ErrorsOf<R> = R extends AnyTRPCError
+  ? R
+  : R extends Effect.Effect<infer A, infer E, any>
+    ? Extract<E | A, AnyTRPCError>
+    : never;
+type ServicesOf<R> = R extends AnyTRPCError
+  ? never
+  : R extends Effect.Effect<any, any, infer S>
+    ? S
+    : R extends Stream.Stream<any, any, infer S>
+      ? S
+      : never;
+
+/** @internal */
+export interface Split {
+  output: unknown;
+  errors: AnyTRPCError;
+  services: unknown;
+}
+/** @internal */
+export type SplitReturn<R> =
+  IsAny<Awaited<R>> extends true
+    ? { output: any; errors: never; services: never }
+    : {
+        output: OutputOf<Awaited<R>>;
+        errors: ErrorsOf<Awaited<R>>;
+        services: ServicesOf<Awaited<R>>;
+      };
+
+type EventOf<R> = R extends AnyTRPCError
+  ? never
+  : R extends Stream.Stream<infer A, any, any>
+    ? A
+    : R extends AsyncIterable<infer T>
+      ? T
+      : never;
+type StreamErrorsOf<R> = R extends AnyTRPCError
+  ? R
+  : R extends Stream.Stream<any, infer E, any>
+    ? Extract<E, AnyTRPCError>
+    : never;
+/** @internal */
+export type SplitStream<R> =
+  IsAny<Awaited<R>> extends true
+    ? { output: any; errors: never; services: never }
+    : {
+        output: EventOf<Awaited<R>>;
+        errors: StreamErrorsOf<Awaited<R>>;
+        services: ServicesOf<Awaited<R>>;
+      };
+
+type OutputConstraint<TDef extends BuilderDef> = TDef['outputIn'] extends Unset
+  ? unknown
+  :
+      | MaybePromise<TDef['outputIn'] | AnyTRPCError>
+      | Effect.Effect<TDef['outputIn'] | AnyTRPCError, any, any>;
+
+/** @internal */
+export type BuildProcedure<
+  TDef extends BuilderDef,
+  TType extends ProcedureType,
+  TSplit extends Split,
+> = Procedure<{
+  type: TType;
+  ctx: TDef['ctx'];
+  meta: TDef['meta'];
+  input: Value<TDef['inputIn']>;
+  output: TDef['outputOut'] extends Unset
+    ? TSplit['output']
+    : TDef['outputOut'];
+  errors: TDef['errors'] | TSplit['errors'];
+  services: TDef['requires'] | Exclude<TSplit['services'], TDef['provided']>;
+}>;
+
+// --- concat ----------------------------------------------------------------------
+
+/** `unknown` when `plugin` may be concatenated onto a builder with `TDef`. @internal */
+export type ConcatCheck<TDef extends BuilderDef, TPlugin extends BuilderDef> = [
+  Missing<CurrentCtx<TDef>, TPlugin['ctx']>,
+] extends [never]
+  ? [Missing<TDef['meta'], TPlugin['meta']>] extends [never]
+    ? unknown
+    : TypeError<
+        'concat: the plugin needs meta this procedure does not declare',
+        Missing<TDef['meta'], TPlugin['meta']>
+      >
+  : TypeError<
+      'concat: the plugin needs ctx this procedure does not have',
+      Missing<CurrentCtx<TDef>, TPlugin['ctx']>
+    >;
+
+// --- the builder -------------------------------------------------------------------
+
+/**
+ * The runtime state under `'~trpc'`.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface BuilderInternals {
+  readonly steps: ReadonlyArray<Step>;
+  readonly meta: object;
+  readonly output: AnySchema | undefined;
+}
+
+/**
+ * Builds procedures. Every method returns a new builder, so builders can be
+ * shared as base procedures.
+ *
+ * @example
+ * ```ts
+ * const t = initTRPC<{ ctx: { user: User | null } }>();
+ *
+ * const authed = t.procedure.use(({ ctx, next }) =>
+ *   ctx.user ? next({ ctx: { user: ctx.user } }) : error({ code: 'UNAUTHORIZED' }),
+ * );
+ *
+ * export const router = {
+ *   me: authed.query(({ ctx }) => ctx.user),
+ * };
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface ProcedureBuilder<TDef extends BuilderDef> {
+  readonly '~trpc': BuilderInternals & { readonly '~types'?: TDef };
+
+  /**
+   * Adds an input schema built from the ctx (05 D-A). The callback runs per
+   * call, so build schemas outside it where possible.
+   *
+   * @example
+   * ```ts
+   * t.procedure.input(({ ctx }) =>
+   *   z.object({ limit: z.number().max(ctx.user.plan === 'pro' ? 1000 : 10) }),
+   * );
+   * ```
+   */
+  input<$S extends AnySchema>(
+    fn: (opts: InputOpts<CurrentCtx<TDef>, TDef['meta']>) => $S,
+  ): ProcedureBuilder<InputDef<TDef, $S>>;
+  /**
+   * Adds an input schema: Standard Schema (zod, valibot, ArkType, …) or Effect
+   * Schema. Object inputs chain: each schema validates the raw input, and the
+   * results are merged.
+   *
+   * @example
+   * ```ts
+   * t.procedure.input(z.object({ id: z.string() }));
+   * t.procedure.input(Schema.Struct({ id: Schema.String }));
+   * ```
+   */
+  input<$S extends AnySchema>(schema: $S): ProcedureBuilder<InputDef<TDef, $S>>;
+
+  /**
+   * Validates the resolver's return value. The resolver returns the schema's
+   * input type, and the client receives its output type.
+   *
+   * @example
+   * ```ts
+   * t.procedure.output(z.object({ id: z.string() })).query(() => ({ id: '1' }));
+   * ```
+   */
+  output<$S extends AnySchema>(
+    schema: $S,
+  ): ProcedureBuilder<
+    With<
+      TDef,
+      {
+        outputIn: InOf<$S>;
+        outputOut: OutOf<$S>;
+        requires:
+          | TDef['requires']
+          | Exclude<SchemaServices<$S>, TDef['provided']>;
+      }
+    >
+  >;
+
+  /**
+   * Adds middleware. It calls `next()` (optionally with `{ ctx }`) or returns
+   * a `TRPCError`, which becomes part of the procedure's error union.
+   *
+   * @example
+   * ```ts
+   * t.procedure.use(async ({ ctx, next }) => {
+   *   if (!ctx.user) return error({ code: 'UNAUTHORIZED' });
+   *   return next({ ctx: { user: ctx.user } });
+   * });
+   * ```
+   */
+  use<$Ctx extends object = {}, $Err extends AnyTRPCError = never>(
+    fn: MiddlewareFunction<
+      CurrentCtx<TDef>,
+      Value<TDef['inputOut']>,
+      TDef['meta'],
+      $Ctx,
+      $Err
+    >,
+  ): ProcedureBuilder<
+    With<
+      TDef,
+      {
+        ctxAdded: Overwrite<TDef['ctxAdded'], $Ctx>;
+        errors: TDef['errors'] | $Err;
+      }
+    >
+  >;
+
+  /**
+   * Provides an Effect service to everything after it: later input schemas,
+   * `.provide()` calls and the resolver. The handler's `layer` no longer has
+   * to provide it.
+   *
+   * @example
+   * ```ts
+   * class CurrentUser extends Context.Service<CurrentUser, User>()('CurrentUser') {}
+   *
+   * const authed = t.procedure.provide(CurrentUser, ({ ctx }) => ctx.user);
+   * authed.query(() => Effect.gen(function* () {
+   *   return yield* CurrentUser;
+   * }));
+   * ```
+   */
+  provide<$Id, $Shape, $E = never, $R = never>(
+    service: Context.Key<$Id, $Shape>,
+    make: (
+      opts: ProvideOpts<TDef>,
+    ) => MaybePromise<$Shape> | Effect.Effect<$Shape, $E, $R>,
+  ): ProcedureBuilder<
+    With<
+      TDef,
+      {
+        provided: TDef['provided'] | $Id;
+        requires: TDef['requires'] | Exclude<$R, TDef['provided']>;
+        errors: TDef['errors'] | Extract<$E, AnyTRPCError>;
+      }
+    >
+  >;
+
+  /**
+   * Sets procedure meta, shallow-merged over earlier meta. Middleware and
+   * resolvers receive it.
+   *
+   * @example
+   * ```ts
+   * t.procedure.meta({ auth: 'admin' });
+   * ```
+   */
+  meta(meta: TDef['meta']): ProcedureBuilder<TDef>;
+
+  /**
+   * Appends another builder's steps. The other builder can come from a
+   * different `t`, for example a plugin package: its root ctx and meta are
+   * requirements, checked against this builder's current ctx and meta.
+   *
+   * @example
+   * ```ts
+   * // in a package
+   * const t = initTRPC<{ ctx: { db: Db } }>();
+   * export const audited = t.procedure.use(({ ctx, next }) =>
+   *   next({ ctx: { audit: makeAudit(ctx.db) } }),
+   * );
+   *
+   * // in the app
+   * app.procedure.concat(audited).mutation(({ ctx }) => ctx.audit.log('…'));
+   * ```
+   */
+  concat<$Plugin extends BuilderDef>(
+    plugin: ProcedureBuilder<$Plugin> & ConcatCheck<TDef, $Plugin>,
+  ): ProcedureBuilder<
+    With<
+      TDef,
+      {
+        ctxAdded: Overwrite<TDef['ctxAdded'], $Plugin['ctxAdded']>;
+        inputIn: Merge<TDef['inputIn'], $Plugin['inputIn']>;
+        inputOut: Merge<TDef['inputOut'], $Plugin['inputOut']>;
+        errors: TDef['errors'] | $Plugin['errors'];
+        provided: TDef['provided'] | $Plugin['provided'];
+        requires:
+          | TDef['requires']
+          | Exclude<$Plugin['requires'], TDef['provided']>;
+      }
+    >
+  >;
+
+  /**
+   * A read. The resolver can return a value, a `Promise`, an `Effect`, or a
+   * `TRPCError`. Outputs may contain `Promise`s and `AsyncIterable`s, which
+   * stream to the client.
+   *
+   * @example
+   * ```ts
+   * t.procedure.input(z.object({ id: z.string() })).query(({ input }) => db.find(input.id));
+   * ```
+   */
+  query<$Ret>(
+    resolver: (opts: ResolverOpts<TDef>) => $Ret & OutputConstraint<TDef>,
+  ): BuildProcedure<TDef, 'query', SplitReturn<$Ret>>;
+
+  /**
+   * A write. Same resolver forms as `query`.
+   *
+   * @example
+   * ```ts
+   * t.procedure.input(z.object({ title: z.string() })).mutation(({ input }) => db.create(input));
+   * ```
+   */
+  mutation<$Ret>(
+    resolver: (opts: ResolverOpts<TDef>) => $Ret & OutputConstraint<TDef>,
+  ): BuildProcedure<TDef, 'mutation', SplitReturn<$Ret>>;
+
+  /**
+   * A stream of events, over SSE. The resolver returns an `AsyncIterable`
+   * (an `async function*`) or an Effect `Stream`. Wrap events in `tracked()`
+   * so clients can resume.
+   *
+   * @example
+   * ```ts
+   * t.procedure.subscription(async function* ({ signal }) {
+   *   for await (const post of posts.on('add', { signal })) yield tracked(post.id, post);
+   * });
+   * ```
+   */
+  subscription<$Ret>(
+    resolver: (opts: SubscriptionResolverOpts<TDef>) => $Ret,
+  ): BuildProcedure<TDef, 'subscription', SplitStream<$Ret>>;
+}
+
+type InputDef<TDef extends BuilderDef, $S extends AnySchema> = With<
+  TDef,
+  {
+    inputIn: Merge<TDef['inputIn'], InOf<$S>>;
+    inputOut: Merge<TDef['inputOut'], OutOf<$S>>;
+    errors: TDef['errors'] | InputValidationError;
+    requires: TDef['requires'] | Exclude<SchemaServices<$S>, TDef['provided']>;
+  }
+>;
+
+/**
+ * Any procedure builder.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type AnyProcedureBuilder = ProcedureBuilder<any>;
+
+/** @internal */
+export function createBuilder(
+  internals: BuilderInternals,
+): AnyProcedureBuilder {
+  const add = (step: Step) =>
+    createBuilder({ ...internals, steps: [...internals.steps, step] });
+  const build =
+    (type: ProcedureType) =>
+    (resolver: (opts: any) => unknown): any => ({
+      '~trpc': {
+        type,
+        meta: internals.meta,
+        steps: internals.steps,
+        output: internals.output,
+        resolver,
+      },
+    });
+  return {
+    '~trpc': internals,
+    input: (arg: AnySchema | ((opts: any) => AnySchema)) =>
+      add({ kind: 'input', arg }),
+    output: (schema: AnySchema) =>
+      createBuilder({ ...internals, output: schema }),
+    use: (fn: (opts: any) => unknown) => add({ kind: 'use', fn }),
+    provide: (key: Context.Key<any, any>, make: (opts: any) => unknown) =>
+      add({ kind: 'provide', key, make }),
+    meta: (meta: object) =>
+      createBuilder({ ...internals, meta: { ...internals.meta, ...meta } }),
+    concat: (plugin: AnyProcedureBuilder) =>
+      createBuilder({
+        ...internals,
+        steps: [...internals.steps, ...plugin['~trpc'].steps],
+      }),
+    query: build('query'),
+    mutation: build('mutation'),
+    subscription: build('subscription'),
+  } as AnyProcedureBuilder;
+}

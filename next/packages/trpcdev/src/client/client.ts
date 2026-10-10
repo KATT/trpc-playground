@@ -1,0 +1,267 @@
+import { Effect, Exit, Stream } from 'effect';
+import type { ProcedureType } from '../internal/types.ts';
+import {
+  clientErrorFromCause,
+  firstValue,
+  runLinks,
+  type Operation,
+  type OperationStream,
+  type TRPCClientContext,
+  type TRPCLink,
+} from './link.ts';
+import type { SubscribeOptions, TRPCClient, TRPCPromise } from './types.ts';
+
+/** @internal */
+export function createRecursiveProxy(
+  callback: (path: readonly string[], args: unknown[]) => unknown,
+  path: readonly string[] = [],
+): any {
+  return new Proxy(() => {}, {
+    get(_target, key) {
+      if (typeof key !== 'string' || key === 'then') return undefined;
+      return createRecursiveProxy(callback, [...path, key]);
+    },
+    apply(_target, _this, args: unknown[]) {
+      return callback(path, args);
+    },
+  });
+}
+
+const METHODS = {
+  query: 'query',
+  mutate: 'mutation',
+  subscribe: 'subscription',
+} as const satisfies Record<string, ProcedureType>;
+
+let nextId = 0;
+
+/** @internal */
+export function makeOperation(
+  type: ProcedureType,
+  path: string,
+  input: unknown,
+  opts: SubscribeOptions | undefined,
+): Operation {
+  return {
+    id: ++nextId,
+    type,
+    path,
+    input,
+    context: opts?.context ?? {},
+    signal: opts?.signal,
+    lastEventId: opts?.lastEventId,
+  };
+}
+
+/** Interrupts `stream` quietly when `signal` aborts. @internal */
+export function untilAborted(
+  stream: OperationStream,
+  signal: AbortSignal | undefined,
+): OperationStream {
+  if (!signal) return stream;
+  return Stream.interruptWhen(
+    stream,
+    Effect.callback<void>((resume) => {
+      if (signal.aborted) return resume(Effect.void);
+      const onAbort = () => resume(Effect.void);
+      signal.addEventListener('abort', onAbort, { once: true });
+      return Effect.sync(() => signal.removeEventListener('abort', onAbort));
+    }),
+  );
+}
+
+/**
+ * Options for {@link createTRPCClient}.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface TRPCClientOptions {
+  /** The request chain. The last link sends the request. */
+  links: ReadonlyArray<TRPCLink>;
+}
+
+/**
+ * The untyped client that typed clients and integrations are built on.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface TRPCUntypedClient {
+  /** Runs a query or mutation. */
+  request(opts: {
+    type: 'query' | 'mutation';
+    path: string;
+    input?: unknown;
+    signal?: AbortSignal | undefined;
+    context?: TRPCClientContext | undefined;
+  }): Promise<unknown>;
+  /** Starts a subscription. */
+  subscribe(opts: {
+    path: string;
+    input?: unknown;
+    signal?: AbortSignal | undefined;
+    context?: TRPCClientContext | undefined;
+    lastEventId?: string | undefined;
+  }): AsyncIterable<unknown>;
+}
+
+/**
+ * Creates a client without router types (16 (f)).
+ *
+ * @example
+ * ```ts
+ * const untyped = createUntypedClient({ links: [httpLink({ url })] });
+ * const post = await untyped.request({ type: 'query', path: 'post.byId', input: { id: '1' } });
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function createUntypedClient(
+  opts: TRPCClientOptions,
+): TRPCUntypedClient {
+  const { links } = opts;
+  return {
+    async request(o) {
+      const op = makeOperation(o.type, o.path, o.input, o);
+      const exit = await Effect.runPromiseExit(
+        firstValue(runLinks(links, op)),
+        {
+          signal: op.signal,
+        },
+      );
+      if (Exit.isSuccess(exit)) return exit.value;
+      throw clientErrorFromCause(exit.cause);
+    },
+    subscribe(o) {
+      return {
+        [Symbol.asyncIterator]() {
+          const op = makeOperation('subscription', o.path, o.input, o);
+          return Stream.toAsyncIterable(
+            untilAborted(runLinks(links, op), op.signal),
+          )[Symbol.asyncIterator]();
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Creates a typed client for a router (16 CS-A).
+ *
+ * @example
+ * ```ts
+ * import type { AppRouter } from './server';
+ *
+ * const client = createTRPCClient<AppRouter>({
+ *   links: [httpLink({ url: 'http://localhost:3000/trpc' })],
+ * });
+ * const post = await client.post.byId.query({ id: '1' }, { signal });
+ * for await (const event of client.onPost.subscribe()) render(event);
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function createTRPCClient<TRouter>(
+  opts: TRPCClientOptions,
+): TRPCClient<TRouter> {
+  const untyped = createUntypedClient(opts);
+  return createRecursiveProxy((path, args) => {
+    const method = path.at(-1) as keyof typeof METHODS | undefined;
+    const type = method ? METHODS[method] : undefined;
+    if (!type) {
+      throw new TypeError(
+        `Call .query(), .mutate() or .subscribe() on a procedure, not ${path.join('.')}()`,
+      );
+    }
+    const procedurePath = path.slice(0, -1).join('.');
+    const [input, callOpts] = args as [unknown, SubscribeOptions | undefined];
+    if (type === 'subscription') {
+      return untyped.subscribe({ path: procedurePath, input, ...callOpts });
+    }
+    return untyped.request({ type, path: procedurePath, input, ...callOpts });
+  });
+}
+
+/**
+ * The result of `safe()`: a `[data, error]` tuple that also has `data` and
+ * `error` properties (07 Q7.3).
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type SafeResult<T, E> =
+  | ([data: T, error: undefined] & {
+      readonly data: T;
+      readonly error: undefined;
+    })
+  | ([data: undefined, error: E] & {
+      readonly data: undefined;
+      readonly error: E;
+    });
+
+/**
+ * Awaits a call without throwing.
+ *
+ * @example
+ * ```ts
+ * const [post, error] = await safe(client.post.byId.query({ id }));
+ * if (error?.defined && error.code === 'NOT_FOUND') error.data.id; // typed
+ *
+ * const { data, error } = await safe(client.post.create.mutate(input));
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export async function safe<T, E = unknown>(
+  promise: PromiseLike<T> & { readonly '~error'?: E },
+): Promise<SafeResult<T, E>> {
+  try {
+    const data = await promise;
+    return Object.assign([data, undefined] as [T, undefined], {
+      data,
+      error: undefined,
+    });
+  } catch (cause) {
+    const error = cause as E;
+    return Object.assign([undefined, error] as [undefined, E], {
+      data: undefined,
+      error,
+    });
+  }
+}
+
+/**
+ * A client whose queries and mutations resolve to `safe()` results.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type SafeClient<TClient> = {
+  [K in keyof TClient]: TClient[K] extends (
+    ...args: infer A
+  ) => TRPCPromise<infer T, infer E>
+    ? (...args: A) => Promise<SafeResult<T, E>>
+    : TClient[K] extends (...args: any[]) => any
+      ? TClient[K]
+      : SafeClient<TClient[K]>;
+};
+
+/**
+ * Wraps a client so every query and mutation returns a `safe()` result.
+ *
+ * @example
+ * ```ts
+ * const safeClient = createSafeClient(client);
+ * const [post, error] = await safeClient.post.byId.query({ id });
+ * ```
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export function createSafeClient<TClient extends object>(
+  client: TClient,
+): SafeClient<TClient> {
+  return createRecursiveProxy((path, args) => {
+    let target: any = client;
+    for (const key of path) target = target[key];
+    const method = path.at(-1);
+    const result = target(...args);
+    return method === 'query' || method === 'mutate' ? safe(result) : result;
+  });
+}

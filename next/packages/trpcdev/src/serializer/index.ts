@@ -56,6 +56,7 @@ export type { JsonValue } from './utils.ts';
  * createSerializer({ types: { Decimal: decimal } });
  * ```
  * @since 12.0.0-alpha.0
+ * @stability experimental
  */
 export interface CustomType<T, TSerialized = unknown> {
   /** Whether `value` is of this type. */
@@ -71,7 +72,10 @@ export interface CustomType<T, TSerialized = unknown> {
   input?: boolean;
 }
 
-/** @since 12.0.0-alpha.0 */
+/**
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export interface SerializerOptions {
   /** Custom types, keyed by the name used on the wire. */
   types?: Record<string, CustomType<any, any>>;
@@ -82,7 +86,10 @@ export interface SerializerOptions {
   maxDepth?: number;
 }
 
-/** @since 12.0.0-alpha.0 */
+/**
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
 export interface DeserializeOpts {
   /**
    * Deserializing untrusted input. Types that are unsafe to accept from a
@@ -96,6 +103,7 @@ export interface DeserializeOpts {
  * use compatible serializers.
  *
  * @since 12.0.0-alpha.0
+ * @stability experimental
  */
 export interface Serializer {
   /** Serializes a value with no deferred parts. Throws on a `Promise` or stream. */
@@ -126,6 +134,7 @@ export interface Serializer {
  * httpLink({ url, serializer });
  * ```
  * @since 12.0.0-alpha.0
+ * @stability experimental
  */
 export function createSerializer(opts: SerializerOptions = {}): Serializer {
   const customSerializers: SerializeRecord = {};
@@ -164,5 +173,6 @@ export function createSerializer(opts: SerializerOptions = {}): Serializer {
 /**
  * The serializer used when none is configured.
  * @since 12.0.0-alpha.0
+ * @stability experimental
  */
 export const defaultSerializer: Serializer = createSerializer();

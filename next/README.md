@@ -2,11 +2,12 @@
 
 All **implementation** for the rewrite lives here. The old v11 tree at the repo root (`packages/`, `examples/`, `www/`, …) is reference only until it is deleted.
 
-Agents: start with [`AGENTS.md`](./AGENTS.md). Design docs live in [`.agent-docs/`](./.agent-docs/). Brief: `../ideas.md`.
+Agents: start with [`AGENTS.md`](./AGENTS.md). Design docs live in [`.agent-docs/`](./.agent-docs/). Brief: [`ideas.md`](./ideas.md).
 
 ```text
 next/
   AGENTS.md             agent instructions for this code root
+  ideas.md              brief and constraints
   .agent-docs/          proposals, decisions, reference, spike notes (design only)
   .repos/               vendored dependency source (vendor-src, read-only)
   packages/trpcdev/     core package (ideas.md: single `trpcdev` package)

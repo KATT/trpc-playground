@@ -273,6 +273,7 @@ export function httpLink(opts: HTTPLinkOptions): TRPCLink {
       };
     }
     const frames = live.map(() => new AsyncQueue<Frame>());
+    const received = new Set<number>();
     try {
       const calls: BatchCall[] = live.map((item) => ({
         path: item.op.path,
@@ -307,6 +308,7 @@ export function httpLink(opts: HTTPLinkOptions): TRPCLink {
           queue.push(line.chunk as Frame);
           continue;
         }
+        received.add(line.i);
         if (line.status >= 400) {
           item.reject(
             fromWireError(
@@ -325,7 +327,8 @@ export function httpLink(opts: HTTPLinkOptions): TRPCLink {
           ),
         ).then(item.resolve, (cause) => item.reject(toHttpError(cause)));
       }
-      for (const item of live) {
+      for (const [i, item] of live.entries()) {
+        if (received.has(i)) continue;
         item.reject(
           new TRPCError({
             code: 'PARSE_ERROR',
@@ -334,7 +337,9 @@ export function httpLink(opts: HTTPLinkOptions): TRPCLink {
         );
       }
     } catch (cause) {
-      for (const item of live) item.reject(toHttpError(cause));
+      for (const [i, item] of live.entries()) {
+        if (!received.has(i)) item.reject(toHttpError(cause));
+      }
     } finally {
       for (const queue of frames) queue.end();
     }

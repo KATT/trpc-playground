@@ -1,4 +1,5 @@
 import type { BuiltinErrorCode, TRPCError } from '../internal/error.ts';
+import type { Deserialized } from '../internal/types.ts';
 import type { AnyProcedure, Procedure } from '../server/procedure.ts';
 import type { TRPCClientContext } from './link.ts';
 
@@ -86,18 +87,21 @@ export type DecorateProcedure<P> =
       ? {
           query(
             ...args: CallArgs<D['input'], CallOptions>
-          ): TRPCPromise<D['output'], ClientError<D['errors']>>;
+          ): TRPCPromise<Deserialized<D['output']>, ClientError<D['errors']>>;
         }
       : D['type'] extends 'mutation'
         ? {
             mutate(
               ...args: CallArgs<D['input'], CallOptions>
-            ): TRPCPromise<D['output'], ClientError<D['errors']>>;
+            ): TRPCPromise<Deserialized<D['output']>, ClientError<D['errors']>>;
           }
         : {
             subscribe(
               ...args: CallArgs<D['input'], SubscribeOptions>
-            ): TRPCSubscription<D['output'], ClientError<D['errors']>>;
+            ): TRPCSubscription<
+              Deserialized<D['output']>,
+              ClientError<D['errors']>
+            >;
           }
     : never;
 

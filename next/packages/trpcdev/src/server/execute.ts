@@ -7,6 +7,7 @@ import {
 } from '../internal/error.ts';
 import type { AnyProcedure } from './procedure.ts';
 import { inputError, isSchema, outputError, validate } from './schema.ts';
+import { isTracked, tracked } from './tracked.ts';
 
 const unexpectedErrors = new WeakSet<AnyTRPCError>();
 
@@ -251,7 +252,11 @@ function toEventStream(
   }
   if (output) {
     stream = Stream.mapEffect(stream, (event) =>
-      validate(output, event, outputError),
+      isTracked(event)
+        ? Effect.map(validate(output, event.data, outputError), (data) =>
+            tracked(event.id, data),
+          )
+        : validate(output, event, outputError),
     );
   }
   return Stream.provideContext(stream, services) as Stream.Stream<

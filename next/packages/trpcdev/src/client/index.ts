@@ -62,3 +62,4 @@ export {
   type BuiltinErrorCode,
   type TRPCErrorOptions,
 } from '../internal/error.ts';
+export type { Deserialized } from '../internal/types.ts';

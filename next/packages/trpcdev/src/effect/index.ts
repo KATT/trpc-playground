@@ -25,6 +25,7 @@ import type {
   ClientError,
   SubscribeOptions,
 } from '../client/types.ts';
+import type { Deserialized } from '../internal/types.ts';
 import type { AnyProcedure, Procedure } from '../server/procedure.ts';
 
 export { link };
@@ -40,18 +41,24 @@ export type DecorateEffectProcedure<P> =
       ? {
           query(
             ...args: CallArgs<D['input'], CallOptions>
-          ): Effect.Effect<D['output'], ClientError<D['errors']>>;
+          ): Effect.Effect<Deserialized<D['output']>, ClientError<D['errors']>>;
         }
       : D['type'] extends 'mutation'
         ? {
             mutate(
               ...args: CallArgs<D['input'], CallOptions>
-            ): Effect.Effect<D['output'], ClientError<D['errors']>>;
+            ): Effect.Effect<
+              Deserialized<D['output']>,
+              ClientError<D['errors']>
+            >;
           }
         : {
             subscribe(
               ...args: CallArgs<D['input'], SubscribeOptions>
-            ): Stream.Stream<D['output'], ClientError<D['errors']>>;
+            ): Stream.Stream<
+              Deserialized<D['output']>,
+              ClientError<D['errors']>
+            >;
           }
     : never;
 

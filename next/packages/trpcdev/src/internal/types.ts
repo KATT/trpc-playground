@@ -52,6 +52,40 @@ export type Missing<THave, TNeed> = {
       : K;
 }[keyof TNeed];
 
+type Leaf =
+  | string
+  | number
+  | boolean
+  | bigint
+  | symbol
+  | null
+  | undefined
+  | Date
+  | RegExp
+  | URL
+  | Error
+  | Uint8Array
+  | ReadonlyMap<unknown, unknown>
+  | ReadonlySet<unknown>
+  | ((...args: any[]) => unknown);
+
+/**
+ * A value as the client receives it: generators arrive as plain
+ * `AsyncIterable`s and thenables as `Promise`s, at any depth.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type Deserialized<T> =
+  IsAny<T> extends true
+    ? any
+    : T extends Leaf
+      ? T
+      : T extends AsyncIterable<infer U>
+        ? AsyncIterable<Deserialized<U>>
+        : T extends PromiseLike<infer U>
+          ? Promise<Deserialized<U>>
+          : { [K in keyof T]: Deserialized<T[K]> };
+
 /**
  * `query`, `mutation` or `subscription`.
  * @since 12.0.0-alpha.0

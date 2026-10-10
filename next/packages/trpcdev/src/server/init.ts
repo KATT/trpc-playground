@@ -1,7 +1,11 @@
 import type { AnyTRPCError } from '../internal/error.ts';
 import type { Unset } from '../internal/types.ts';
 import { createBuilder, type ProcedureBuilder } from './builder.ts';
-import type { MiddlewareFunction } from './middleware.ts';
+import {
+  makeEffectMiddleware,
+  type EffectMiddlewareFactory,
+  type MiddlewareFunction,
+} from './middleware.ts';
 
 /**
  * The type-level config of `initTRPC`.
@@ -39,6 +43,8 @@ export interface RootDef<TCtx extends object, TMeta extends object> {
   outputIn: Unset;
   outputOut: Unset;
   errors: never;
+  declared: {};
+  shorts: never;
   provided: never;
   requires: never;
 }
@@ -64,9 +70,38 @@ export interface TRPCRoot<TCtx extends object, TMeta extends object> {
    * });
    * ```
    */
-  middleware<$Ctx extends object = {}, $Err extends AnyTRPCError = never>(
-    fn: MiddlewareFunction<TCtx, unknown, TMeta, $Ctx, $Err>,
-  ): MiddlewareFunction<TCtx, unknown, TMeta, $Ctx, $Err>;
+  middleware: RootMiddleware<TCtx, TMeta>;
+}
+
+/**
+ * `t.middleware`, with `t.middleware.effect` for Effect middleware.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface RootMiddleware<TCtx extends object, TMeta extends object> {
+  <$Ctx extends object = {}, $Err extends AnyTRPCError = never, $Ok = never>(
+    fn: MiddlewareFunction<TCtx, unknown, TMeta, $Ctx, $Err, $Ok>,
+  ): MiddlewareFunction<TCtx, unknown, TMeta, $Ctx, $Err, $Ok>;
+  /**
+   * An Effect middleware (06 M-A): `next()` returns an `Effect`. Declare the
+   * services it provides with `t.middleware.effect<{ provides: S }>()(fn)`.
+   *
+   * @example
+   * ```ts
+   * const timed = t.middleware.effect()(({ path, next }) =>
+   *   next().pipe(Effect.withSpan(path)),
+   * );
+   * const withUser = t.middleware.effect<{ provides: CurrentUser }>()(({ ctx, next }) =>
+   *   next().pipe(Effect.provideService(CurrentUser, ctx.user)),
+   * );
+   * ```
+   */
+  effect<TDecl extends { provides?: unknown } = {}>(): EffectMiddlewareFactory<
+    TCtx,
+    unknown,
+    TMeta,
+    'provides' extends keyof TDecl ? TDecl['provides'] : never
+  >;
 }
 
 /**
@@ -95,7 +130,11 @@ export function initTRPC<TConfig extends RootConfig = {}>(
       steps: [],
       meta: opts.defaultMeta ?? {},
       output: undefined,
+      errors: {},
+      route: undefined,
     }),
-    middleware: (fn) => fn,
+    middleware: Object.assign((fn: unknown) => fn, {
+      effect: () => makeEffectMiddleware,
+    }) as never,
   };
 }

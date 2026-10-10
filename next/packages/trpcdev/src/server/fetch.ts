@@ -25,10 +25,12 @@ import { defaultSerializer, type Serializer } from '../serializer/index.ts';
 import type { Chunk } from '../serializer/stream.ts';
 import {
   callProcedure,
+  createResponseHandle,
   isUnexpectedError,
   normalizeCause,
   unexpectedError,
 } from './execute.ts';
+import type { ResponseHandle } from './middleware.ts';
 import type { AnyProcedure } from './procedure.ts';
 import {
   getProcedure,
@@ -150,6 +152,7 @@ interface CallResult {
   status: number;
   body: unknown;
   chunks?: Stream.Stream<Chunk, unknown> | undefined;
+  headers?: Headers | undefined;
 }
 
 /**
@@ -210,15 +213,16 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     body: BodyInit | null,
     contentType: string,
     extra?: Record<string, string>,
-  ) =>
-    new Response(body, {
-      status,
-      headers: {
-        'content-type': contentType,
-        [HEADER.version]: PROTOCOL_VERSION,
-        ...extra,
-      },
-    });
+    set?: Headers,
+  ) => {
+    const headers = new Headers(set);
+    headers.set('content-type', contentType);
+    headers.set(HEADER.version, PROTOCOL_VERSION);
+    for (const [key, value] of Object.entries(extra ?? {})) {
+      headers.set(key, value);
+    }
+    return new Response(body, { status, headers });
+  };
 
   async function readBody(request: Request): Promise<unknown> {
     if (!isJsonContentType(request.headers.get('content-type'))) {
@@ -302,11 +306,20 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     ctx: object,
     input: unknown,
     signal: AbortSignal,
+    response: ResponseHandle,
     lastEventId?: string,
   ): Promise<Exit.Exit<unknown, AnyTRPCError>> {
     const context = await getServices();
     return Effect.runPromiseExitWith(context)(
-      callProcedure({ procedure, path, ctx, input, signal, lastEventId }),
+      callProcedure({
+        procedure,
+        path,
+        ctx,
+        input,
+        signal,
+        response,
+        lastEventId,
+      }),
       { signal },
     );
   }
@@ -321,11 +334,13 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     signal: AbortSignal,
   ): Promise<CallResult> {
     const type = procedure['~trpc'].type;
-    const exit = await run(procedure, path, ctx, input, signal);
+    const response = createResponseHandle();
+    const { headers } = response;
+    const exit = await run(procedure, path, ctx, input, signal, response);
     if (Exit.isFailure(exit)) {
       const err = normalizeCause(exit.cause);
       report(err, request, path, type);
-      return { status: err.status, body: wire(err) };
+      return { status: err.status, body: wire(err), headers };
     }
     try {
       const { head, chunks } = serializer.serializeDeferred(exit.value, {
@@ -335,11 +350,11 @@ export function createFetchHandler<TRouter extends AnyRouter>(
           return toWireError(publicError(err));
         },
       });
-      return { status: 200, body: head, chunks };
+      return { status: response.status ?? 200, body: head, chunks, headers };
     } catch (cause) {
       const err = unexpectedError(cause);
       report(err, request, path, type);
-      return { status: err.status, body: wire(err) };
+      return { status: err.status, body: wire(err), headers };
     }
   }
 
@@ -348,6 +363,7 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     signal: AbortSignal,
     abort: () => void,
     contentType: string = CONTENT_TYPE.jsonl,
+    headers?: Headers,
   ): Response {
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -375,9 +391,13 @@ export function createFetchHandler<TRouter extends AnyRouter>(
       },
       cancel: abort,
     });
-    return respond(200, body, contentType, {
-      'cache-control': 'no-cache',
-    });
+    return respond(
+      200,
+      body,
+      contentType,
+      { 'cache-control': 'no-cache' },
+      headers,
+    );
   }
 
   const runChunks = (
@@ -434,6 +454,8 @@ export function createFetchHandler<TRouter extends AnyRouter>(
           result.status,
           JSON.stringify(result.body),
           CONTENT_TYPE.json,
+          undefined,
+          result.headers,
         );
       }
       const chunks = result.chunks;
@@ -444,6 +466,8 @@ export function createFetchHandler<TRouter extends AnyRouter>(
         },
         controller.signal,
         onAbort,
+        CONTENT_TYPE.jsonl,
+        result.headers,
       );
     } catch (cause) {
       const err = isTRPCError(cause) ? cause : unexpectedError(cause);
@@ -463,18 +487,26 @@ export function createFetchHandler<TRouter extends AnyRouter>(
     const onAbort = () => controller.abort();
     request.signal.addEventListener('abort', onAbort, { once: true });
     const lastEventId = request.headers.get(HEADER.lastEventId) ?? undefined;
+    const response = createResponseHandle();
     const exit = await run(
       procedure,
       path,
       ctx,
       input,
       controller.signal,
+      response,
       lastEventId,
     );
     if (Exit.isFailure(exit)) {
       const err = normalizeCause(exit.cause);
       report(err, request, path, 'subscription');
-      return respond(err.status, JSON.stringify(wire(err)), CONTENT_TYPE.json);
+      return respond(
+        err.status,
+        JSON.stringify(wire(err)),
+        CONTENT_TYPE.json,
+        undefined,
+        response.headers,
+      );
     }
     const events = exit.value as Stream.Stream<unknown, AnyTRPCError>;
     return linesResponse(
@@ -502,6 +534,7 @@ export function createFetchHandler<TRouter extends AnyRouter>(
       controller.signal,
       onAbort,
       CONTENT_TYPE.sse,
+      response.headers,
     );
   }
 
@@ -566,11 +599,20 @@ export function createFetchHandler<TRouter extends AnyRouter>(
       }
     };
 
+    // Headers are sent first, so the response waits for every call's head
+    // to merge their headers (04 (d)). Deferred values still stream.
+    const results = await Promise.all(calls.map(one));
+    const headers = new Headers();
+    for (const result of results) {
+      for (const [key, value] of result.headers ?? []) {
+        if (key === 'set-cookie') headers.append(key, value);
+        else headers.set(key, value);
+      }
+    }
     return linesResponse(
       async (write) => {
         await Promise.all(
-          calls.map(async (call, i) => {
-            const result = await one(call);
+          results.map(async (result, i) => {
             write({
               i,
               status: result.status,
@@ -588,6 +630,8 @@ export function createFetchHandler<TRouter extends AnyRouter>(
       },
       controller.signal,
       onAbort,
+      CONTENT_TYPE.jsonl,
+      headers,
     );
   }
 

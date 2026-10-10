@@ -4,6 +4,55 @@ import type { ProcedureType } from '../internal/types.ts';
 import type { AnySchema } from './schema.ts';
 
 /**
+ * A declared error (07 A): its status, default message and `data` schema.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface ErrorSpec {
+  readonly status?: number;
+  readonly message?: string;
+  readonly data?: AnySchema;
+}
+
+/**
+ * Declared errors by code.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type ErrorMap = Readonly<Record<string, ErrorSpec>>;
+
+/**
+ * REST metadata (04 (g)). The RPC endpoint ignores it; the OpenAPI handler,
+ * generator and link use it (18).
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export interface Route {
+  /** @default 'GET' for queries and subscriptions, 'POST' for mutations */
+  readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** With `{param}` placeholders, e.g. `/posts/{id}`. @default the procedure path, `/post/byId` */
+  readonly path?: `/${string}`;
+  /** @default 200 */
+  readonly successStatus?: number;
+  readonly summary?: string;
+  readonly description?: string;
+  readonly tags?: ReadonlyArray<string>;
+  readonly deprecated?: boolean;
+  readonly operationId?: string;
+  /**
+   * `compact` merges path params with the query (GET) or body into one input.
+   * `detailed` passes `{ params, query, headers, body }`.
+   * @default 'compact'
+   */
+  readonly inputStructure?: 'compact' | 'detailed';
+  /**
+   * `detailed` resolvers return `{ status?, headers?, body }`.
+   * @default 'compact'
+   */
+  readonly outputStructure?: 'compact' | 'detailed';
+}
+
+/**
  * Everything the type system knows about a procedure.
  * @since 12.0.0-alpha.0
  * @stability experimental
@@ -25,7 +74,12 @@ export interface ProcedureDef {
 
 /** @internal */
 export type Step =
-  | { readonly kind: 'use'; readonly fn: (opts: any) => unknown }
+  | {
+      readonly kind: 'use';
+      readonly fn: (opts: any) => unknown;
+      /** `next()` returns an `Effect` (06 M-A). */
+      readonly effect?: boolean;
+    }
   | {
       readonly kind: 'input';
       readonly arg: AnySchema | ((opts: any) => AnySchema);
@@ -46,7 +100,10 @@ export interface ProcedureInternals {
   readonly meta: object;
   readonly steps: ReadonlyArray<Step>;
   readonly output: AnySchema | undefined;
-  readonly resolver: (opts: any) => unknown;
+  readonly errors: ErrorMap;
+  readonly route: Route | undefined;
+  /** Absent on contract procedures (09). */
+  readonly resolver: ((opts: any) => unknown) | undefined;
 }
 
 /**
@@ -97,6 +154,6 @@ export function isProcedure(value: unknown): value is AnyProcedure {
     typeof value === 'object' &&
     value !== null &&
     '~trpc' in value &&
-    typeof (value as AnyProcedure)['~trpc'].resolver === 'function'
+    typeof (value as AnyProcedure)['~trpc'].type === 'string'
   );
 }

@@ -67,11 +67,25 @@ export function createRouterClient<TRouter extends AnyRouter>(
 }
 
 /**
- * Calls one procedure directly. Throws the procedure's `TRPCError`s.
+ * The options of {@link call}. `layer` is required when the procedure needs
+ * Effect services.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type CallOptions<TDef extends ProcedureDef> = {
+  ctx: TDef['ctx'];
+  signal?: AbortSignal;
+  /** Passed to middleware and the resolver. @default '' */
+  path?: string;
+} & ServicesOption<TDef['services']>;
+
+/**
+ * Calls one procedure directly. Throws the procedure's `TRPCError`s. The
+ * `layer` is built for the call and released after it.
  *
  * @example
  * ```ts
- * const post = await call(byId, { id: '1' }, { ctx: { user } });
+ * const post = await call(byId, { id: '1' }, { ctx: { user }, layer: PostRepo.Live });
  * ```
  * @since 12.0.0-alpha.0
  * @stability experimental
@@ -79,16 +93,22 @@ export function createRouterClient<TRouter extends AnyRouter>(
 export async function call<TDef extends ProcedureDef>(
   procedure: Procedure<TDef>,
   input: TDef['input'],
-  opts: { ctx: TDef['ctx']; signal?: AbortSignal; path?: string },
+  opts: CallOptions<TDef>,
 ): Promise<TDef['output']> {
+  const effect = callProcedure({
+    procedure,
+    path: opts.path ?? '',
+    ctx: opts.ctx,
+    input,
+    signal: opts.signal ?? new AbortController().signal,
+  });
+  const layer = (opts as { layer?: Layer.Layer<any, any, never> }).layer;
   const exit = await Effect.runPromiseExit(
-    callProcedure({
-      procedure,
-      path: opts.path ?? '',
-      ctx: opts.ctx,
-      input,
-      signal: opts.signal ?? new AbortController().signal,
-    }) as Effect.Effect<TDef['output'], never, never>,
+    (layer ? Effect.provide(effect, layer) : effect) as Effect.Effect<
+      TDef['output'],
+      never,
+      never
+    >,
     { signal: opts.signal },
   );
   if (Exit.isSuccess(exit)) return exit.value;

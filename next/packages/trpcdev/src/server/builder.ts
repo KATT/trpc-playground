@@ -1,5 +1,5 @@
 import type { Context, Effect, Stream } from 'effect';
-import type { AnyTRPCError } from '../internal/error.ts';
+import type { AnyTRPCError, TRPCError } from '../internal/error.ts';
 import type {
   IsAny,
   MaybePromise,
@@ -11,8 +11,19 @@ import type {
   Unset,
   Value,
 } from '../internal/types.ts';
-import type { MiddlewareFunction } from './middleware.ts';
-import type { Procedure, Step } from './procedure.ts';
+import {
+  isEffectMiddleware,
+  type EffectMiddleware,
+  type MiddlewareFunction,
+  type ResponseHandle,
+} from './middleware.ts';
+import type {
+  ErrorMap,
+  ErrorSpec,
+  Procedure,
+  Route,
+  Step,
+} from './procedure.ts';
 import type {
   AnySchema,
   InOf,
@@ -20,6 +31,7 @@ import type {
   OutOf,
   SchemaServices,
 } from './schema.ts';
+import type { TrackedEnvelope } from './tracked.ts';
 
 /**
  * The builder's state: one mapped bag (03 G-A).
@@ -37,7 +49,11 @@ export interface BuilderDef {
   outputIn: unknown;
   outputOut: unknown;
   errors: AnyTRPCError;
-  /** Effect services provided by `.provide()`. */
+  /** Errors declared with `.errors()`, by code. */
+  declared: object;
+  /** Values middleware may short-circuit with, via `ok()`. */
+  shorts: unknown;
+  /** Effect services provided by `.provide()` and Effect middleware. */
   provided: unknown;
   /** Effect services required by steps (input schemas, `.provide()` effects). */
   requires: unknown;
@@ -75,6 +91,30 @@ export interface InputOpts<TCtx, TMeta> {
 }
 
 /**
+ * The input of a declared error's constructor.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type ErrorConstructorOpts<TData> = {
+  message?: string;
+  cause?: unknown;
+} & (undefined extends TData ? { data?: TData } : { data: TData });
+
+/**
+ * Typed constructors for the errors declared with `.errors()` (07 A). The
+ * errors they make are `defined` even when thrown from deep helper code.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type ErrorConstructors<TDeclared> = {
+  readonly [K in keyof TDeclared]: TDeclared[K] extends TRPCError<any, infer D>
+    ? undefined extends D
+      ? (opts?: ErrorConstructorOpts<D>) => TDeclared[K]
+      : (opts: ErrorConstructorOpts<D>) => TDeclared[K]
+    : never;
+};
+
+/**
  * What a resolver receives.
  * @since 12.0.0-alpha.0
  * @stability experimental
@@ -87,6 +127,10 @@ export interface ResolverOpts<TDef extends BuilderDef> {
   readonly type: ProcedureType;
   /** Aborted when the client goes away. */
   readonly signal: AbortSignal;
+  /** Response headers and status (04 (d)). */
+  readonly response: ResponseHandle;
+  /** Constructors for the errors declared with `.errors()`. */
+  readonly errors: ErrorConstructors<TDef['declared']>;
 }
 
 /**
@@ -185,11 +229,74 @@ export type SplitStream<R> =
         services: ServicesOf<Awaited<R>>;
       };
 
+// --- resolver checks ------------------------------------------------------------------
+
 type OutputConstraint<TDef extends BuilderDef> = TDef['outputIn'] extends Unset
   ? unknown
   :
       | MaybePromise<TDef['outputIn'] | AnyTRPCError>
       | Effect.Effect<TDef['outputIn'] | AnyTRPCError, any, any>;
+
+type EventConstraint<TDef extends BuilderDef> = TDef['outputIn'] extends Unset
+  ? unknown
+  :
+      | AsyncIterable<
+          TDef['outputIn'] | TrackedEnvelope<TDef['outputIn']>,
+          any,
+          any
+        >
+      | Stream.Stream<
+          TDef['outputIn'] | TrackedEnvelope<TDef['outputIn']>,
+          any,
+          any
+        >
+      | AnyTRPCError;
+
+type UnmappedOf<R> =
+  R extends Effect.Effect<any, infer E, any>
+    ? Exclude<E, AnyTRPCError>
+    : R extends Stream.Stream<any, infer E, any>
+      ? Exclude<E, AnyTRPCError>
+      : never;
+
+/**
+ * 02 d.ii: an Effect or Stream that can fail with something other than a
+ * `TRPCError` is a type error until the failure is mapped.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type StrictErrors<R> =
+  IsAny<Awaited<R>> extends true
+    ? unknown
+    : [UnmappedOf<Awaited<R>>] extends [never]
+      ? unknown
+      : TypeError<
+          'Map Effect failures to a TRPCError (e.g. Effect.catchTag) before returning them',
+          UnmappedOf<Awaited<R>>
+        >;
+
+/**
+ * Checks values from `ok()` short-circuits against the procedure's output.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type ShortsCheck<TDef extends BuilderDef, TOutput> = [
+  TDef['shorts'],
+] extends [never]
+  ? unknown
+  : [TDef['shorts']] extends [TOutput]
+    ? unknown
+    : TypeError<
+        'ok(): a middleware short-circuits with a value the output does not accept',
+        TDef['shorts']
+      >;
+
+type ResolvedOutput<
+  TDef extends BuilderDef,
+  $Ret,
+> = TDef['outputIn'] extends Unset
+  ? SplitReturn<$Ret>['output']
+  : TDef['outputIn'];
 
 /**
  * Part of inferred procedure types; exported so they stay nameable.
@@ -207,7 +314,11 @@ export type BuildProcedure<
   input: Value<TDef['inputIn']>;
   output: TDef['outputOut'] extends Unset
     ? TSplit['output']
-    : TDef['outputOut'];
+    : TType extends 'subscription'
+      ? TSplit['output'] extends TrackedEnvelope<any>
+        ? TrackedEnvelope<TDef['outputOut']>
+        : TDef['outputOut']
+      : TDef['outputOut'];
   errors: TDef['errors'] | TSplit['errors'];
   services: TDef['requires'] | Exclude<TSplit['services'], TDef['provided']>;
 }>;
@@ -233,6 +344,27 @@ export type ConcatCheck<TDef extends BuilderDef, TPlugin extends BuilderDef> = [
       Missing<CurrentCtx<TDef>, TPlugin['ctx']>
     >;
 
+// --- declared errors -------------------------------------------------------------
+
+/**
+ * The `.errors()` argument.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type ErrorMapInput = Record<string, ErrorSpec>;
+
+/**
+ * The `TRPCError` types an error map declares, by code.
+ * @since 12.0.0-alpha.0
+ * @stability experimental
+ */
+export type DeclaredErrors<M> = {
+  [K in keyof M & string]: TRPCError<
+    K,
+    M[K] extends { data: infer S } ? OutOf<S> : undefined
+  >;
+};
+
 // --- the builder -------------------------------------------------------------------
 
 /**
@@ -244,6 +376,8 @@ export interface BuilderInternals {
   readonly steps: ReadonlyArray<Step>;
   readonly meta: object;
   readonly output: AnySchema | undefined;
+  readonly errors: ErrorMap;
+  readonly route: Route | undefined;
 }
 
 /**
@@ -297,7 +431,8 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
 
   /**
    * Validates the resolver's return value. The resolver returns the schema's
-   * input type, and the client receives its output type.
+   * input type, and the client receives its output type. For subscriptions it
+   * validates each event (the `data` of `tracked()` events).
    *
    * @example
    * ```ts
@@ -320,8 +455,46 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
   >;
 
   /**
-   * Adds middleware. It calls `next()` (optionally with `{ ctx }`) or returns
-   * a `TRPCError`, which becomes part of the procedure's error union.
+   * Declares errors (07 A): each gets a typed constructor on the resolver's
+   * `errors`, its `data` is validated, and it is documented in OpenAPI.
+   * Errors made by the constructors are `defined` even when thrown.
+   *
+   * @example
+   * ```ts
+   * t.procedure
+   *   .errors({ NOT_FOUND: { data: z.object({ id: z.string() }) } })
+   *   .query(({ input, errors }) => {
+   *     throw errors.NOT_FOUND({ data: { id: '1' } });
+   *   });
+   * ```
+   */
+  errors<const $Map extends ErrorMapInput>(
+    map: $Map,
+  ): ProcedureBuilder<
+    With<
+      TDef,
+      {
+        declared: Overwrite<TDef['declared'], DeclaredErrors<$Map>>;
+        errors: TDef['errors'] | DeclaredErrors<$Map>[keyof $Map & string];
+      }
+    >
+  >;
+
+  /**
+   * REST metadata for the OpenAPI handler and generator (04 (g), 18). The RPC
+   * endpoint ignores it.
+   *
+   * @example
+   * ```ts
+   * t.procedure.route({ method: 'GET', path: '/posts/{id}', tags: ['posts'] });
+   * ```
+   */
+  route(route: Route): ProcedureBuilder<TDef>;
+
+  /**
+   * Adds middleware. It calls `next()` (optionally with `{ ctx }`), returns
+   * `ok(value)` to short-circuit, or returns a `TRPCError`, which becomes
+   * part of the procedure's error union.
    *
    * @example
    * ```ts
@@ -331,13 +504,14 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
    * });
    * ```
    */
-  use<$Ctx extends object = {}, $Err extends AnyTRPCError = never>(
+  use<$Ctx extends object = {}, $Err extends AnyTRPCError = never, $Ok = never>(
     fn: MiddlewareFunction<
       CurrentCtx<TDef>,
       Value<TDef['inputOut']>,
       TDef['meta'],
       $Ctx,
-      $Err
+      $Err,
+      $Ok
     >,
   ): ProcedureBuilder<
     With<
@@ -345,6 +519,41 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
       {
         ctxAdded: Overwrite<TDef['ctxAdded'], $Ctx>;
         errors: TDef['errors'] | $Err;
+        shorts: TDef['shorts'] | $Ok;
+      }
+    >
+  >;
+  /**
+   * Adds an Effect middleware (06 M-A), made with `t.middleware.effect` or
+   * `middleware.effect`. Its failures join the error union and the services
+   * it provides are no longer required from the handler's `layer`.
+   */
+  use<
+    $Ctx extends object,
+    $Err extends AnyTRPCError,
+    $R,
+    $Provides,
+    $Ok = never,
+  >(
+    mw: EffectMiddleware<
+      CurrentCtx<TDef>,
+      Value<TDef['inputOut']>,
+      TDef['meta'],
+      $Ctx,
+      $Err,
+      $R,
+      $Provides,
+      $Ok
+    >,
+  ): ProcedureBuilder<
+    With<
+      TDef,
+      {
+        ctxAdded: Overwrite<TDef['ctxAdded'], $Ctx>;
+        errors: TDef['errors'] | $Err;
+        shorts: TDef['shorts'] | $Ok;
+        provided: TDef['provided'] | $Provides;
+        requires: TDef['requires'] | Exclude<$R, TDef['provided']>;
       }
     >
   >;
@@ -352,7 +561,7 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
   /**
    * Provides an Effect service to everything after it: later input schemas,
    * `.provide()` calls and the resolver. The handler's `layer` no longer has
-   * to provide it.
+   * to provide it. An Effect factory may only fail with a `TRPCError`.
    *
    * @example
    * ```ts
@@ -364,7 +573,7 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
    * }));
    * ```
    */
-  provide<$Id, $Shape, $E = never, $R = never>(
+  provide<$Id, $Shape, $E extends AnyTRPCError = never, $R = never>(
     service: Context.Key<$Id, $Shape>,
     make: (
       opts: ProvideOpts<TDef>,
@@ -375,7 +584,7 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
       {
         provided: TDef['provided'] | $Id;
         requires: TDef['requires'] | Exclude<$R, TDef['provided']>;
-        errors: TDef['errors'] | Extract<$E, AnyTRPCError>;
+        errors: TDef['errors'] | $E;
       }
     >
   >;
@@ -392,9 +601,10 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
   meta(meta: TDef['meta']): ProcedureBuilder<TDef>;
 
   /**
-   * Appends another builder's steps. The other builder can come from a
-   * different `t`, for example a plugin package: its root ctx and meta are
-   * requirements, checked against this builder's current ctx and meta.
+   * Appends another builder's steps, declared errors and route. The other
+   * builder can come from a different `t`, for example a plugin package: its
+   * root ctx and meta are requirements, checked against this builder's
+   * current ctx and meta.
    *
    * @example
    * ```ts
@@ -418,6 +628,8 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
         inputIn: Merge<TDef['inputIn'], $Plugin['inputIn']>;
         inputOut: Merge<TDef['inputOut'], $Plugin['inputOut']>;
         errors: TDef['errors'] | $Plugin['errors'];
+        declared: Overwrite<TDef['declared'], $Plugin['declared']>;
+        shorts: TDef['shorts'] | $Plugin['shorts'];
         provided: TDef['provided'] | $Plugin['provided'];
         requires:
           | TDef['requires']
@@ -437,7 +649,12 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
    * ```
    */
   query<$Ret>(
-    resolver: (opts: ResolverOpts<TDef>) => $Ret & OutputConstraint<TDef>,
+    resolver: (
+      opts: ResolverOpts<TDef>,
+    ) => $Ret &
+      OutputConstraint<TDef> &
+      StrictErrors<$Ret> &
+      ShortsCheck<TDef, ResolvedOutput<TDef, $Ret>>,
   ): BuildProcedure<TDef, 'query', SplitReturn<$Ret>>;
 
   /**
@@ -449,13 +666,18 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
    * ```
    */
   mutation<$Ret>(
-    resolver: (opts: ResolverOpts<TDef>) => $Ret & OutputConstraint<TDef>,
+    resolver: (
+      opts: ResolverOpts<TDef>,
+    ) => $Ret &
+      OutputConstraint<TDef> &
+      StrictErrors<$Ret> &
+      ShortsCheck<TDef, ResolvedOutput<TDef, $Ret>>,
   ): BuildProcedure<TDef, 'mutation', SplitReturn<$Ret>>;
 
   /**
-   * A stream of events, over SSE. The resolver returns an `AsyncIterable`
-   * (an `async function*`) or an Effect `Stream`. Wrap events in `tracked()`
-   * so clients can resume.
+   * A stream of events, over SSE (or a WebSocket). The resolver returns an
+   * `AsyncIterable` (an `async function*`) or an Effect `Stream`. Wrap events
+   * in `tracked()` so clients can resume.
    *
    * @example
    * ```ts
@@ -465,7 +687,9 @@ export interface ProcedureBuilder<TDef extends BuilderDef> {
    * ```
    */
   subscription<$Ret>(
-    resolver: (opts: SubscriptionResolverOpts<TDef>) => $Ret,
+    resolver: (
+      opts: SubscriptionResolverOpts<TDef>,
+    ) => $Ret & EventConstraint<TDef> & StrictErrors<$Ret>,
   ): BuildProcedure<TDef, 'subscription', SplitStream<$Ret>>;
 }
 
@@ -499,12 +723,14 @@ export function createBuilder(
     createBuilder({ ...internals, steps: [...internals.steps, step] });
   const build =
     (type: ProcedureType) =>
-    (resolver: (opts: any) => unknown): any => ({
+    (resolver?: (opts: any) => unknown): any => ({
       '~trpc': {
         type,
         meta: internals.meta,
         steps: internals.steps,
         output: internals.output,
+        errors: internals.errors,
+        route: internals.route,
         resolver,
       },
     });
@@ -514,16 +740,29 @@ export function createBuilder(
       add({ kind: 'input', arg }),
     output: (schema: AnySchema) =>
       createBuilder({ ...internals, output: schema }),
-    use: (fn: (opts: any) => unknown) => add({ kind: 'use', fn }),
+    errors: (map: ErrorMap) =>
+      createBuilder({ ...internals, errors: { ...internals.errors, ...map } }),
+    route: (route: Route) =>
+      createBuilder({ ...internals, route: { ...internals.route, ...route } }),
+    use: (mw: unknown) =>
+      isEffectMiddleware(mw)
+        ? add({ kind: 'use', fn: mw['~effectMiddleware'], effect: true })
+        : add({ kind: 'use', fn: mw as (opts: any) => unknown }),
     provide: (key: Context.Key<any, any>, make: (opts: any) => unknown) =>
       add({ kind: 'provide', key, make }),
     meta: (meta: object) =>
       createBuilder({ ...internals, meta: { ...internals.meta, ...meta } }),
-    concat: (plugin: AnyProcedureBuilder) =>
-      createBuilder({
+    concat: (plugin: AnyProcedureBuilder) => {
+      const other = plugin['~trpc'];
+      return createBuilder({
         ...internals,
-        steps: [...internals.steps, ...plugin['~trpc'].steps],
-      }),
+        steps: [...internals.steps, ...other.steps],
+        errors: { ...internals.errors, ...other.errors },
+        route: other.route
+          ? { ...internals.route, ...other.route }
+          : internals.route,
+      });
+    },
     query: build('query'),
     mutation: build('mutation'),
     subscription: build('subscription'),
